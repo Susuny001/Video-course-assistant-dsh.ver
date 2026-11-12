@@ -18,9 +18,16 @@ _lock = threading.Lock()
 
 
 def app_root() -> Path:
-    """程序根目录：源码运行时是仓库根目录；打包后是 exe 所在目录。"""
+    r"""程序根目录：源码运行时是仓库根目录；打包后是 exe 所在目录。
+
+    本项目把 exe 放在仓库的 dist 下，此时回到上一级，保证源码方式和 exe 方式
+    共用同一份 data 与 samples；把 exe 单独拷走时仍以 exe 所在目录为准。
+    """
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        p = Path(sys.executable).resolve().parent
+        if p.name.lower() == "dist" and (p.parent / "web").exists():
+            return p.parent
+        return p
     return Path(__file__).resolve().parent.parent
 
 

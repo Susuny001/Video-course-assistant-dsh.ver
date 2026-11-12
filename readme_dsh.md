@@ -43,7 +43,7 @@ python run.py --server --port 8877
 build_exe.bat
 ```
 
-产物：`dist\YunKeAssistant.exe`。单文件，运行时会把前端资源解包到临时目录；数据仍然写在 exe 同级的 `data\` 目录。`samples\` 不打进 exe，需要示例课程时把 `samples` 目录放在 exe 旁边（否则课程库里的“导入示例课程”会自动隐藏）。
+产物：`dist\YunKeAssistant.exe`。单文件，运行时会把前端资源解包到临时目录。exe 在项目的 `dist\` 下时，会回到上一级使用仓库的 `data\` 和 `samples\`，和源码方式共用课程库；把 exe 单独拷到别处时，则使用 exe 同级的 `data\`。`samples\` 不打进 exe（示例录音 100MB），单独拷走时“导入示例课程”会自动隐藏。
 
 打包版没有控制台，启动日志写到 `data\app.log`。首次运行单文件 exe 可能被杀毒软件扫描几十秒，之后启动通常在几秒内。
 
