@@ -14,9 +14,24 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db
 from .api import router
-from .config import VERSION, load_settings, web_dir
+from .config import VERSION, data_dir, load_settings, web_dir
 
 APP_TITLE = "云课助手 DSH"
+
+
+def _setup_streams() -> None:
+    """--windowed 打包后 stdout/stderr 为 None，uvicorn 的日志会因此崩溃，这里兜底到文件。"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_path = data_dir() / "app.log"
+    fh = open(log_path, "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = fh
+    if sys.stderr is None:
+        sys.stderr = fh
+
+
+_setup_streams()
 
 
 def create_app() -> FastAPI:
@@ -43,16 +58,18 @@ def _free_port(preferred: int = 8765) -> int:
     return preferred
 
 
-def _wait_ready(port: int, timeout: float = 30) -> bool:
-    import httpx
+def _wait_ready(port: int, timeout: float = 90) -> bool:
+    """用标准库探测，避免打包后 httpx/代理环境导致的误判。"""
+    import urllib.request
+    url = f"http://127.0.0.1:{port}/api/ping"
     end = time.time() + timeout
     while time.time() < end:
         try:
-            r = httpx.get(f"http://127.0.0.1:{port}/api/ping", timeout=1)
-            if r.status_code == 200:
-                return True
+            with urllib.request.urlopen(url, timeout=1.5) as r:
+                if r.status == 200:
+                    return True
         except Exception:
-            time.sleep(0.2)
+            time.sleep(0.3)
     return False
 
 
@@ -77,8 +94,9 @@ def main(argv: list[str] | None = None) -> None:
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
     if not _wait_ready(port):
-        print("服务启动失败，请查看控制台输出。")
+        print("服务启动失败，请查看控制台输出。", flush=True)
         return
+    print(f"[main] server ready: {url}", flush=True)
 
     if args.browser:
         import webbrowser
@@ -93,11 +111,13 @@ def main(argv: list[str] | None = None) -> None:
     try:
         import webview
         load_settings()
+        print("[main] opening webview window", flush=True)
         webview.create_window(APP_TITLE, url, width=1480, height=920,
                               min_size=(1080, 680), background_color="#0b0f17")
         webview.start(debug=False)
+        print("[main] window closed", flush=True)
     except Exception as e:  # noqa: BLE001
-        print(f"原生窗口不可用（{e}），已改用浏览器打开。")
+        print(f"原生窗口不可用（{e}），已改用浏览器打开。", flush=True)
         import webbrowser
         webbrowser.open(url)
         try:
