@@ -305,7 +305,8 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                             frames=frames, course=course,
                         )
                         out = await llm.complete(ref_p, ref_m, msgs, think=False,
-                                                 temperature=0.2, json_mode=True)
+                                                 temperature=0.2, json_mode=True,
+                                                 max_tokens=min(12000, 140 * len(part) + 800))
                         data = llm.parse_json_loose(out)
                     n = _apply_refine(part, data)
                     for t in (data.get("terms") or []) if isinstance(data, dict) else []:

@@ -92,6 +92,8 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
                 data = r.json()
                 return (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
             last_err = f"HTTP {r.status_code}: {r.text[:400]}"
+            if r.status_code == 400 and payload.pop("response_format", None) is not None:
+                continue  # 有些服务商不支持 json_object，退回普通输出再解析
             if r.status_code in (400, 401, 403, 404):
                 break
         except Exception as e:  # noqa: BLE001

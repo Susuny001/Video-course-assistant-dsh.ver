@@ -168,7 +168,8 @@ def update_video(vid: str, **fields) -> None:
 
 def delete_video(vid: str) -> None:
     with connect() as c:
-        for t in ("cues", "segments", "jobs", "messages"):
+        c.execute("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE video_id=?)", (vid,))
+        for t in ("cues", "segments", "jobs"):
             c.execute(f"DELETE FROM {t} WHERE video_id=?", (vid,))
         c.execute("DELETE FROM chats WHERE video_id=?", (vid,))
         c.execute("DELETE FROM videos WHERE id=?", (vid,))

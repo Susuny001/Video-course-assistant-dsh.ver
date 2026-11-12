@@ -45,7 +45,9 @@ def _media_path(v: dict) -> str:
 # ---------------------------------------------------------------- 基础
 @router.get("/ping")
 def ping():
-    return {"ok": True, "version": VERSION, "ffmpeg": media.available()}
+    sd = samples_dir()
+    has_sample = bool(list(sd.glob("icourse_*.mp3")) or list(sd.glob("*.mp4")))
+    return {"ok": True, "version": VERSION, "ffmpeg": media.available(), "samples": has_sample}
 
 
 @router.get("/settings")
@@ -323,11 +325,12 @@ async def keywords(vid: str, body: dict = Body(...)):
     used_ai = False
     pid = body.get("provider") or load_settings()["roles"].get("text", {}).get("provider", "demo")
     p = get_provider(pid)
-    if body.get("use_ai", True) and p and not is_demo(p) and (p.get("api_key") or "").strip() and hits:
+    ai_ready = bool(p and not is_demo(p) and (p.get("api_key") or "").strip())
+    mid = load_settings()["roles"].get("text", {}).get("model")
+    if body.get("use_ai", True) and ai_ready and hits:
         used_ai = True
         try:
             passages = [{"id": i, "t": round(h["start"]), "text": h["text"]} for i, h in enumerate(hits[:40])]
-            mid = load_settings()["roles"].get("text", {}).get("model")
             out = await llm.complete(p, mid, prompts.keyword_messages(kws, passages),
                                      think=False, temperature=0.1, json_mode=True, max_tokens=1600)
             data = llm.parse_json_loose(out)
@@ -335,6 +338,26 @@ async def keywords(vid: str, body: dict = Body(...)):
                    if isinstance(x, dict) and str(x.get("id", "")).isdigit()}
             if ids:
                 hits = [{**hits[i], "why": why} for i, why in ids.items() if 0 <= i < len(hits)]
+        except Exception:  # noqa: BLE001
+            used_ai = False
+    if body.get("use_ai", True) and ai_ready and not hits and segs:
+        # 字幕里没有字面命中时，让模型按语义从分段摘要里找
+        used_ai = True
+        try:
+            passages = [{"id": i, "t": round(s["start"]), "text": f"{s['title']}：{s['abstract']}"}
+                        for i, s in enumerate(segs)]
+            out = await llm.complete(p, mid, prompts.keyword_messages(kws, passages),
+                                     think=False, temperature=0.2, json_mode=True, max_tokens=1200)
+            data = llm.parse_json_loose(out)
+            for x in data.get("hits", []):
+                try:
+                    i = int(x.get("id"))
+                except Exception:
+                    continue
+                if 0 <= i < len(segs):
+                    s = segs[i]
+                    hits.append({"start": s["start"], "end": s["end"], "text": s["abstract"],
+                                 "why": x.get("why", "语义相关")})
         except Exception:  # noqa: BLE001
             used_ai = False
 
@@ -397,6 +420,35 @@ def _frames_in_range(v: dict, start: float, end: float, n: int = 4) -> list[str]
     return frames
 
 
+def _pick_context(question: str, cues: list[dict], max_chars: int = 18000) -> list[dict]:
+    """按问题相关性挑字幕片段，避免长课程把后半段挤出上下文。"""
+    if not cues:
+        return []
+    words = set(re.findall(r"[\u4e00-\u9fa5]{2}|[a-zA-Z]{3,}", question or ""))
+    scored = []
+    for i, c in enumerate(cues):
+        t = c.get("text", "")
+        s = sum(1 for w in words if w in t)
+        if s:
+            scored.append((s, i))
+    if not scored:
+        return cues[:120]
+    scored.sort(reverse=True)
+    keep: set[int] = set()
+    for _s, i in scored[:12]:
+        for j in range(max(0, i - 3), min(len(cues), i + 4)):
+            keep.add(j)
+    out, total = [], 0
+    for i in sorted(keep):
+        c = cues[i]
+        line = f"[{prompts.fmt_ts(c['start'])}] {c['text']}"
+        if total + len(line) > max_chars:
+            break
+        out.append(c)
+        total += len(line) + 1
+    return out
+
+
 @router.post("/chat")
 async def chat(body: dict = Body(...)):
     vid = body.get("video_id", "")
@@ -414,7 +466,8 @@ async def chat(body: dict = Body(...)):
     think = bool(body.get("think", False))
     segs = db.get_segments(vid)
     cues = db.get_cues(vid)
-    system = prompts.chat_system(v["title"], segs, cues, sel,
+    ctx_cues = cues if sel else _pick_context(text, cues)
+    system = prompts.chat_system(v["title"], segs, ctx_cues, sel,
                                  glossary=body.get("glossary") or "")
     history = db.get_messages(cid)[-12:]
     msgs = [{"role": "system", "content": system}]

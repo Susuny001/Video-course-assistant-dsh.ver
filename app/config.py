@@ -32,6 +32,11 @@ def data_dir() -> Path:
     return root
 
 
+def bundled_dir() -> Path:
+    """打包后只读资源所在目录（PyInstaller 解包目录）。"""
+    return Path(getattr(sys, "_MEIPASS", app_root()))
+
+
 def video_dir(vid: str) -> Path:
     p = data_dir() / "videos" / vid
     p.mkdir(parents=True, exist_ok=True)
@@ -39,11 +44,17 @@ def video_dir(vid: str) -> Path:
 
 
 def web_dir() -> Path:
-    return app_root() / "web"
+    p = app_root() / "web"
+    if p.exists():
+        return p
+    return bundled_dir() / "web"
 
 
 def samples_dir() -> Path:
-    return app_root() / "samples"
+    p = app_root() / "samples"
+    if p.exists():
+        return p
+    return bundled_dir() / "samples"
 
 
 # ---------------------------------------------------------------- 默认服务商预设
