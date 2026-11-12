@@ -8,8 +8,6 @@ from pathlib import Path
 
 import httpx
 
-from .config import is_demo
-
 
 def _headers(provider: dict) -> dict:
     key = (provider.get("api_key") or "").strip()
@@ -62,9 +60,6 @@ async def transcribe(provider: dict, model: str, path: str, *,
                      language: str = "", duration: float = 0.0,
                      prompt: str = "") -> dict:
     """返回 {text, language, segments:[{start,end,text}]}。"""
-    if is_demo(provider):
-        raise RuntimeError("demo-provider")
-
     p = Path(path)
     mime = mimetypes.guess_type(p.name)[0] or "audio/mpeg"
     url = provider["base_url"].rstrip("/") + "/audio/transcriptions"

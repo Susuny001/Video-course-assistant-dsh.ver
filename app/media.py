@@ -91,9 +91,11 @@ def web_playable(video: dict) -> bool:
 
 
 def extract_audio(src: str, out: str, bitrate: str = "48k", sr: int = 16000) -> str:
+    """抽取单声道音轨，顺便做响度归一化：网课录音普遍偏小，不归一化语音识别会胡编。"""
     out_p = Path(out)
     out_p.parent.mkdir(parents=True, exist_ok=True)
     p = run([FFMPEG, "-y", "-v", "error", "-i", src, "-vn", "-ac", "1", "-ar", str(sr),
+             "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
              "-b:a", bitrate, str(out_p)])
     if p.returncode != 0:
         raise RuntimeError("提取音轨失败：" + p.stderr.decode("utf-8", "replace")[-800:])

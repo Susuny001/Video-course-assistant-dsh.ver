@@ -133,7 +133,6 @@
       fmtDur(d.video.duration),
       meta.media_kind === "audio" ? "录音" : `${meta.width || "?"}×${meta.height || "?"}`,
       state.cues.length ? `${state.cues.length} 条字幕` : "尚未分析",
-      meta.analysis?.demo ? "演示模式" : "",
     ].filter(Boolean).join(" · ");
 
     setupMedia(d.video);
@@ -456,7 +455,7 @@
     const out = [];
     (s.providers || []).forEach((p) => {
       const models = (role === "asr" ? (p.asr_models?.length ? p.asr_models : p.models) : p.models) || [];
-      models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "demo" || p.id === "ollama" || !!p.api_key }));
+      models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || !!p.api_key }));
     });
     return out;
   }
@@ -537,7 +536,7 @@
     const bubble = aiEl.querySelector(".bubble");
     let acc = "";
     let paint = 0;
-    const [pid, model] = ($("#chatModel").value || "demo||demo-chat").split("||");
+    const [pid, model] = ($("#chatModel").value || "||").split("||");
     const body = {
       video_id: state.cur.id,
       chat_id: state.chatId,
@@ -622,7 +621,7 @@
       `语音识别：${esc(pname(roles.asr.provider))} / ${esc(roles.asr.model)}`,
       `画面纠错：${esc(pname(roles.refine.provider))} / ${esc(roles.refine.model)}`,
       `分段摘要：${esc(pname(roles.text.provider))} / ${esc(roles.text.model)}`,
-      `<span class="muted">想换模型去「设置」。没填 API Key 时会自动用演示模式。</span>`,
+      `<span class="muted">想换模型去「设置」。没填 API Key 无法分析。</span>`,
     ].join("<br>");
     $("#anProgress").classList.add("hidden");
     $("#btnStartAnalyze").disabled = false;
@@ -699,12 +698,12 @@
       const el = document.createElement("div");
       el.className = "provider" + (i === 0 ? " open" : "");
       el.dataset.i = i;
-      const on = p.id === "demo" || p.id === "ollama" || !!p.api_key;
+      const on = p.id === "ollama" || !!p.api_key;
       el.innerHTML = `
         <div class="provider-head">
           <span class="dot ${on ? "on" : ""}"></span>
           <span class="nm">${esc(p.name)}</span>
-          <span class="muted small">${p.api_key ? "已配置" : (p.id === "demo" || p.id === "ollama" ? "无需 Key" : "未配置")}</span>
+          <span class="muted small">${p.api_key ? "已配置" : (p.id === "ollama" ? "无需 Key" : "未配置")}</span>
         </div>
         <div class="provider-body">
           <label class="field"><span>名称</span><input data-k="name" value="${esc(p.name)}"></label>
@@ -730,7 +729,7 @@
       el.querySelector(".act-test").addEventListener("click", async (e) => {
         e.stopPropagation();
         await saveSettings(true);
-        const model = (p.models || [])[0] || "demo-chat";
+        const model = (p.models || [])[0] || "";
         e.target.textContent = "测试中…";
         try {
           const r = await api("/api/settings/test", { method: "POST", body: { provider: p.id, model } });
@@ -821,18 +820,6 @@
         toast("没有导入文件", "err");
       }
     } catch (e) { toast("导入失败：" + e.message, "err"); }
-  }
-
-  async function importDemo() {
-    try {
-      const r = await api("/api/demo/import", { method: "POST" });
-      const v = (r.videos || []).find((x) => x.ok)?.video;
-      if (!v) throw new Error("示例文件不在仓库 samples 目录里");
-      await loadVideos();
-      toast("示例课程已导入", "ok");
-      state.cur = v;
-      openAnalyze();
-    } catch (e) { toast(e.message, "err"); }
   }
 
   /* ------------------------------------------------ 事件绑定 */
@@ -934,7 +921,6 @@
     $("#btnImport").addEventListener("click", importViaDialog);
     $("#btnImport2").addEventListener("click", importViaDialog);
     $("#btnImport3").addEventListener("click", importViaDialog);
-    $("#btnDemo").addEventListener("click", importDemo);
     $("#libSearch").addEventListener("input", renderLibrary);
 
     $("#findCue").addEventListener("input", (e) => {
@@ -1000,10 +986,6 @@
         : "未检测到 ffmpeg，请先运行 setup.bat 安装";
       fillChatModels();
       applySubtitleStyle();
-      try {
-        const p = await api("/api/ping");
-        if (!p.samples) $("#btnDemo").classList.add("hidden");
-      } catch (e) {}
     } catch (e) {
       toast("无法连接本地服务：" + e.message, "err");
     }

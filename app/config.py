@@ -139,17 +139,6 @@ DEFAULT_PROVIDERS = [
         "notes": "先安装 Ollama 并 `ollama pull qwen2.5vl:7b`，无需联网。",
         "docs": "https://ollama.com/download",
     },
-    {
-        "id": "demo",
-        "name": "内置演示模式（不用 API）",
-        "base_url": "demo://",
-        "api_key": "",
-        "models": ["demo-chat"],
-        "asr_models": ["demo-asr"],
-        "vision": True,
-        "notes": "不联网的假数据，用参考文稿铺满时间轴，方便先体验界面与流程。",
-        "docs": "",
-    },
 ]
 
 
@@ -232,8 +221,6 @@ def get_provider(pid: str) -> dict | None:
 
 
 def provider_ready(pid: str) -> bool:
-    if pid == "demo":
-        return True
     p = get_provider(pid)
     if not p:
         return False
@@ -242,23 +229,22 @@ def provider_ready(pid: str) -> bool:
     return bool((p.get("api_key") or "").strip())
 
 
-def resolve_role(role: str) -> tuple[dict, str, bool]:
-    """返回 (provider, model, 是否降级到演示模式)。"""
+def resolve_role(role: str) -> tuple[dict, str]:
+    """返回 (provider, model)。没配 Key 直接报错，不伪造数据。"""
     s = load_settings()
     cfg = s["roles"].get(role) or {}
-    pid, model = cfg.get("provider", "demo"), cfg.get("model", "")
+    pid, model = cfg.get("provider", ""), cfg.get("model", "")
     provider = get_provider(pid)
-    if not provider or not provider_ready(pid):
-        demo = get_provider("demo")
-        assert demo
-        return demo, "demo-asr" if role == "asr" else "demo-chat", True
+    if not provider:
+        raise RuntimeError(f"没有找到服务商「{pid}」，请到设置里配置。")
+    if not provider_ready(pid):
+        raise RuntimeError(f"「{provider['name']}」还没有填写 API Key，请到设置里配置后再分析。")
     if not model:
-        model = (provider.get("asr_models") or provider.get("models") or ["demo"])[0]
-    return provider, model, False
-
-
-def is_demo(provider: dict) -> bool:
-    return provider.get("base_url", "").startswith("demo://")
+        pool = (provider.get("asr_models") if role == "asr" else provider.get("models")) or []
+        if not pool:
+            raise RuntimeError(f"「{provider['name']}」没有可用模型，请到设置里填写。")
+        model = pool[0]
+    return provider, model
 
 
 def new_id(prefix: str = "") -> str:

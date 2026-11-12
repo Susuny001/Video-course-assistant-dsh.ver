@@ -14,9 +14,8 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, Response,
                                StreamingResponse)
 
-from . import db, demo, dialog, export, llm, media, pipeline, prompts
-from .config import (VERSION, get_provider, is_demo, load_settings, new_id,
-                     samples_dir, save_settings, video_dir)
+from . import db, dialog, export, llm, media, pipeline, prompts, search
+from .config import VERSION, get_provider, load_settings, save_settings, video_dir
 
 router = APIRouter(prefix="/api")
 _tasks: set[asyncio.Task] = set()
@@ -45,9 +44,7 @@ def _media_path(v: dict) -> str:
 # ---------------------------------------------------------------- 基础
 @router.get("/ping")
 def ping():
-    sd = samples_dir()
-    has_sample = bool(list(sd.glob("icourse_*.mp3")) or list(sd.glob("*.mp4")))
-    return {"ok": True, "version": VERSION, "ffmpeg": media.available(), "samples": has_sample}
+    return {"ok": True, "version": VERSION, "ffmpeg": media.available()}
 
 
 @router.get("/settings")
@@ -69,9 +66,12 @@ async def test_settings(body: dict = Body(...)):
     p = get_provider(pid)
     if not p:
         raise HTTPException(400, "服务商不存在")
-    if not p.get("api_key") and pid not in ("demo", "ollama"):
+    if not p.get("api_key") and pid != "ollama":
         return {"ok": False, "message": "还没有填写 API Key"}
-    ok, msg = await llm.test_provider(p, model or (p.get("models") or ["demo-chat"])[0])
+    model = model or (p.get("models") or [""])[0]
+    if not model:
+        return {"ok": False, "message": "还没有填写模型名"}
+    ok, msg = await llm.test_provider(p, model)
     return {"ok": ok, "message": msg}
 
 
@@ -118,18 +118,6 @@ async def import_dialog(body: dict = Body(default={})):
     if kind != "video":
         return {"ok": True, "paths": files}
     return await import_videos({"paths": files, "reference_path": body.get("reference_path", "")})
-
-
-@router.post("/demo/import")
-async def import_demo():
-    sd = samples_dir()
-    vids = sorted(sd.glob("icourse_*.mp3")) + sorted(sd.glob("*.mp4"))
-    if not vids:
-        raise HTTPException(404, "仓库里的 samples 目录没有示例课程")
-    refs = list(sd.glob("*文字稿*.md"))
-    resp = await import_videos({"paths": [str(vids[0])],
-                                "reference_path": str(refs[0]) if refs else ""})
-    return resp
 
 
 @router.get("/videos")
@@ -321,11 +309,11 @@ async def keywords(vid: str, body: dict = Body(...)):
     if not cues:
         raise HTTPException(400, "还没有字幕，请先分析课程")
 
-    hits = demo.demo_keyword_hits(kws, cues, limit=40)
+    hits = search.keyword_hits(kws, cues, limit=40)
     used_ai = False
-    pid = body.get("provider") or load_settings()["roles"].get("text", {}).get("provider", "demo")
+    pid = body.get("provider") or load_settings()["roles"].get("text", {}).get("provider", "")
     p = get_provider(pid)
-    ai_ready = bool(p and not is_demo(p) and (p.get("api_key") or "").strip())
+    ai_ready = bool(p and (p.get("api_key") or "").strip())
     mid = load_settings()["roles"].get("text", {}).get("model")
     if body.get("use_ai", True) and ai_ready and hits:
         used_ai = True
@@ -459,10 +447,13 @@ async def chat(body: dict = Body(...)):
     cid = body.get("chat_id") or ""
     if not cid or not db.one("SELECT id FROM chats WHERE id=?", (cid,)):
         cid = db.create_chat(vid, text[:24] or "新对话")
-    sel, sel_texts = _selection_context(vid, body.get("selection"))
-    pid = body.get("provider") or load_settings()["roles"]["chat"]["provider"]
-    p = get_provider(pid) or get_provider("demo")
-    model = body.get("model") or load_settings()["roles"]["chat"].get("model") or "demo-chat"
+    sel, _ = _selection_context(vid, body.get("selection"))
+    chat_role = load_settings()["roles"].get("chat") or {}
+    pid = body.get("provider") or chat_role.get("provider", "")
+    p = get_provider(pid)
+    model = body.get("model") or chat_role.get("model") or ((p or {}).get("models") or [""])[0]
+    if not p or not model:
+        raise HTTPException(400, "还没有可用的答疑模型，请先到设置里选择服务商和模型。")
     think = bool(body.get("think", False))
     segs = db.get_segments(vid)
     cues = db.get_cues(vid)
@@ -479,7 +470,8 @@ async def chat(body: dict = Body(...)):
         user_msg += f"\n\n（我选中的片段：{prompts.fmt_ts(sel['start'])} - {prompts.fmt_ts(sel['end'])}）"
     db.add_message(cid, "user", text, {"selection": sel})
 
-    demo_mode = is_demo(p) or not (p.get("api_key") or "").strip()
+    if not p or not (p.get("api_key") or "").strip():
+        raise HTTPException(400, "答疑模型还没有配置 API Key，请先到设置里填写。")
     frames: list[str] = []
     if body.get("include_frames") and sel:
         frames = await asyncio.to_thread(_frames_in_range, v, sel["start"], sel["end"], 4)
@@ -491,17 +483,10 @@ async def chat(body: dict = Body(...)):
     async def gen():
         acc = []
         try:
-            if demo_mode:
-                ans = demo.demo_chat(text, cues, segs, sel)
-                for i in range(0, len(ans), 12):
-                    acc.append(ans[i:i + 12])
-                    yield ans[i:i + 12]
-                    await asyncio.sleep(0.012)
-            else:
-                async for piece in llm.stream(p, model, msgs, think=think,
-                                              temperature=float(body.get("temperature") or 0.4)):
-                    acc.append(piece)
-                    yield piece
+            async for piece in llm.stream(p, model, msgs, think=think,
+                                          temperature=float(body.get("temperature") or 0.4)):
+                acc.append(piece)
+                yield piece
         except Exception as e:  # noqa: BLE001
             err = f"\n\n> 调用失败：{str(e)[:300]}"
             acc.append(err)
@@ -509,7 +494,7 @@ async def chat(body: dict = Body(...)):
         finally:
             if acc:
                 db.add_message(cid, "assistant", "".join(acc),
-                               {"provider": pid, "model": model, "demo": demo_mode})
+                               {"provider": pid, "model": model})
 
     headers = {"X-Chat-Id": cid, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8", headers=headers)

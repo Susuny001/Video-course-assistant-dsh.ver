@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
-from . import asr, db, demo, export, llm, media, prompts
-from .config import (data_dir, get_provider, is_demo, load_settings, resolve_role,
-                     video_dir)
+from . import asr, db, export, llm, media, prompts
+from .config import get_provider, load_settings, resolve_role, video_dir
 from .refdoc import best_excerpt, load_text
 
 CANCELED = "canceled"
@@ -28,20 +28,16 @@ def _check(jid: str) -> None:
         raise Canceled()
 
 
-def _role(opts: dict, name: str) -> tuple[dict, str, bool]:
+def _role(opts: dict, name: str) -> tuple[dict, str]:
     cfg = (opts or {}).get(name) or {}
     if cfg.get("provider"):
         p = get_provider(cfg["provider"])
         if p:
-            if cfg["provider"] == "demo" or not _needs_key(p) or (p.get("api_key") or "").strip():
-                pool = (p.get("asr_models") if name == "asr" else p.get("models")) or p.get("models") or ["demo"]
-                model = cfg.get("model") or pool[0]
-                return p, model, is_demo(p)
+            pool = (p.get("asr_models") if name == "asr" else p.get("models")) or p.get("models") or []
+            model = cfg.get("model") or (pool[0] if pool else "")
+            if model:
+                return p, model
     return resolve_role(name)
-
-
-def _needs_key(p: dict) -> bool:
-    return p.get("id") not in ("demo", "ollama")
 
 
 def _chunks(duration: float, size: float) -> list[tuple[float, float]]:
@@ -67,6 +63,17 @@ def _group_segments(cues: list[dict], target: float = 480.0, max_len: float = 90
             cur.append(c)
     segs.append({"start": cur[0]["start"], "end": cur[-1]["end"], "cues": cur})
     return segs
+
+
+def _local_segment_info(text: str) -> dict:
+    """模型失败时的兜底：只做摘录，不编造内容。"""
+    sents = [s.strip() for s in re.split(r"(?<=[。！？!?；;])", text or "") if s.strip()]
+    first = (sents[0] if sents else (text or ""))[:20].strip("，。；：、 ")
+    return {
+        "title": first or "课堂片段",
+        "abstract": "".join(sents[:4])[:150] or (text or "")[:150],
+        "keypoints": [s.strip("，。； ")[:34] for s in sents[1:5] if 8 <= len(s) <= 34],
+    }
 
 
 def _apply_refine(cues: list[dict], data: dict) -> int:
@@ -182,10 +189,9 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         ref_text = load_text(ref_path) if ref_path else ""
         course = v["title"]
 
-        asr_p, asr_m, asr_demo = _role(opts, "asr")
-        ref_p, ref_m, ref_demo = _role(opts, "refine")
-        txt_p, txt_m, txt_demo = _role(opts, "text")
-        demo_mode = asr_demo and ref_demo
+        asr_p, asr_m = _role(opts, "asr")
+        ref_p, ref_m = _role(opts, "refine")
+        txt_p, txt_m = _role(opts, "text")
 
         db.update_job(jid, progress=1, message="读取媒体信息", log_line="开始分析")
         db.update_video(vid, status="analyzing")
@@ -200,7 +206,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         meta["reference_path"] = ref_path
         meta["analysis"] = {
             "asr": f"{asr_p['name']} / {asr_m}", "refine": f"{ref_p['name']} / {ref_m}",
-            "text": f"{txt_p['name']} / {txt_m}", "demo": demo_mode,
+            "text": f"{txt_p['name']} / {txt_m}",
             "translation_lang": translation_lang, "term_policy": term_policy,
         }
         db.update_video(vid, duration=dur, meta=meta)
@@ -247,14 +253,11 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
             await asyncio.to_thread(media.slice_audio, str(audio), cs, cl, str(part))
             before = len(all_cues)
             try:
-                if asr_demo:
-                    res = demo.demo_transcribe(ref_text, dur, cs, cl)
-                else:
-                    res = await asr.transcribe(
-                        asr_p, asr_m, str(part),
-                        language="" if ui.get("subtitle_lang") in ("auto", "") else ui.get("subtitle_lang", "zh"),
-                        duration=cl, prompt=course,
-                    )
+                res = await asr.transcribe(
+                    asr_p, asr_m, str(part),
+                    language="" if ui.get("subtitle_lang") in ("auto", "") else ui.get("subtitle_lang", "zh"),
+                    duration=cl, prompt=course,
+                )
                 for s in res["segments"]:
                     t = (s.get("text") or "").strip()
                     if not t:
@@ -280,7 +283,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                           log_line=f"识别完成 {i+1}/{len(chunks)}")
             db.replace_cues(vid, all_cues)
 
-        if fail == len(chunks) and not asr_demo:
+        if fail == len(chunks):
             raise RuntimeError("所有片段语音识别都失败了，请检查 API Key / 模型 / 网络后重试。")
 
         # ---------------- 视觉纠错 + 翻译
@@ -295,21 +298,18 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                 raw_join = "".join(c.get("raw") or "" for c in part)
                 ref_excerpt = best_excerpt(ref_text, raw_join) if ref_text else ""
                 try:
-                    if ref_demo:
-                        data = demo.demo_refine(part, translation_lang)
-                    else:
-                        ctx_before = "".join(c.get("text", "") for c in all_cues[max(0, a - 3):a])
-                        ctx_after = "".join(c.get("text", "") for c in all_cues[b:b + 3])
-                        msgs = prompts.refine_messages(
-                            part, reference=ref_excerpt, glossary=glossary,
-                            term_policy=term_policy, translation_lang=translation_lang,
-                            context_before=ctx_before, context_after=ctx_after,
-                            frames=frames, course=course,
-                        )
-                        out = await llm.complete(ref_p, ref_m, msgs, think=False,
-                                                 temperature=0.2, json_mode=True,
-                                                 max_tokens=min(12000, 140 * len(part) + 800))
-                        data = llm.parse_json_loose(out)
+                    ctx_before = "".join(c.get("text", "") for c in all_cues[max(0, a - 3):a])
+                    ctx_after = "".join(c.get("text", "") for c in all_cues[b:b + 3])
+                    msgs = prompts.refine_messages(
+                        part, reference=ref_excerpt, glossary=glossary,
+                        term_policy=term_policy, translation_lang=translation_lang,
+                        context_before=ctx_before, context_after=ctx_after,
+                        frames=frames, course=course,
+                    )
+                    out = await llm.complete(ref_p, ref_m, msgs, think=False,
+                                             temperature=0.2, json_mode=True,
+                                             max_tokens=min(12000, 140 * len(part) + 800))
+                    data = llm.parse_json_loose(out)
                     n = _apply_refine(part, data)
                     for t in (data.get("terms") or []) if isinstance(data, dict) else []:
                         if isinstance(t, str) and t not in collected_terms:
@@ -331,15 +331,12 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     _check(jid)
                     part = all_cues[i:i + step]
                     try:
-                        if txt_demo:
-                            data = demo.demo_refine(part, translation_lang)
-                        else:
-                            out = await llm.complete(
-                                txt_p, txt_m, prompts.translate_messages(part, translation_lang, glossary),
-                                think=False, temperature=0.2, json_mode=True,
-                                max_tokens=min(6000, 120 * len(part) + 400),
-                            )
-                            data = llm.parse_json_loose(out)
+                        out = await llm.complete(
+                            txt_p, txt_m, prompts.translate_messages(part, translation_lang, glossary),
+                            think=False, temperature=0.2, json_mode=True,
+                            max_tokens=min(6000, 120 * len(part) + 400),
+                        )
+                        data = llm.parse_json_loose(out)
                         _apply_refine(part, data)
                     except Exception as e:  # noqa: BLE001
                         db.update_job(jid, log_line=f"翻译失败：{str(e)[:100]}")
@@ -359,19 +356,16 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
             info_d: dict = {}
             async with sem:
                 try:
-                    if txt_demo:
-                        info_d = demo.demo_segment_info(text, s["start"], s["end"])
-                    else:
-                        out = await llm.complete(
-                            txt_p, txt_m,
-                            prompts.segment_messages(text, s["start"], s["end"], course),
-                            think=False, temperature=0.3, json_mode=True, max_tokens=700,
-                        )
-                        info_d = llm.parse_json_loose(out)
+                    out = await llm.complete(
+                        txt_p, txt_m,
+                        prompts.segment_messages(text, s["start"], s["end"], course),
+                        think=False, temperature=0.3, json_mode=True, max_tokens=700,
+                    )
+                    info_d = llm.parse_json_loose(out)
                 except Exception as e:  # noqa: BLE001
                     db.update_job(jid, log_line=f"第 {idx+1} 段摘要失败：{str(e)[:100]}")
             if not isinstance(info_d, dict) or not info_d.get("title"):
-                info_d = demo.demo_segment_info(text, s["start"], s["end"])
+                info_d = _local_segment_info(text)
             return {
                 "start": s["start"], "end": s["end"],
                 "title": str(info_d.get("title") or "")[:40],
@@ -388,16 +382,17 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         overview: dict = {}
         lines = "\n".join(f"- {s['title']}：{s['abstract']}" for s in segments)
         try:
-            if txt_demo:
-                overview = demo.demo_overview(segments)
-            else:
-                out = await llm.complete(txt_p, txt_m, prompts.overview_messages(lines, course),
-                                         think=False, temperature=0.3, json_mode=True, max_tokens=1200)
-                overview = llm.parse_json_loose(out)
+            out = await llm.complete(txt_p, txt_m, prompts.overview_messages(lines, course),
+                                     think=False, temperature=0.3, json_mode=True, max_tokens=1200)
+            overview = llm.parse_json_loose(out)
         except Exception as e:  # noqa: BLE001
             db.update_job(jid, log_line=f"总览生成失败：{str(e)[:100]}")
         if not isinstance(overview, dict) or not overview.get("summary"):
-            overview = demo.demo_overview(segments)
+            overview = {
+                "summary": "；".join(s["title"] for s in segments[:6]),
+                "takeaways": [s["title"] for s in segments[:5]],
+                "terms": [],
+            }
         if collected_terms:
             exist = {t.get("term") for t in overview.get("terms") or []}
             for t in collected_terms[:20]:
@@ -409,7 +404,6 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         meta["overview"] = overview
         meta["terms"] = [t for t in collected_terms]
         meta["analyzed_at"] = time.time()
-        meta["demo_mode"] = demo_mode
         db.update_video(vid, status="ready", meta=meta)
         artifacts = export.write_all(vdir, {**v, "updated_at": time.strftime("%Y-%m-%d %H:%M")},
                                      segments, all_cues, overview, bilingual)

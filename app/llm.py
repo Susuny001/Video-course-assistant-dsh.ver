@@ -11,8 +11,6 @@ from typing import AsyncIterator
 
 import httpx
 
-from .config import is_demo
-
 SYSTEM_ERROR = "模型调用失败"
 
 
@@ -67,9 +65,6 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
                    think: bool = False, temperature: float = 0.4,
                    max_tokens: int | None = None, timeout: float = 900,
                    json_mode: bool = False) -> str:
-    if is_demo(provider):
-        raise RuntimeError("demo-provider")  # 由调用方处理演示逻辑
-
     url = provider["base_url"].rstrip("/") + "/chat/completions"
     payload: dict = {
         "model": model,
@@ -105,9 +100,6 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
 async def stream(provider: dict, model: str, messages: list[dict], *,
                  think: bool = False, temperature: float = 0.4,
                  max_tokens: int | None = None) -> AsyncIterator[str]:
-    if is_demo(provider):
-        raise RuntimeError("demo-provider")
-
     url = provider["base_url"].rstrip("/") + "/chat/completions"
     payload: dict = {
         "model": model,
@@ -162,8 +154,6 @@ def parse_json_loose(text: str) -> dict:
 
 
 async def test_provider(provider: dict, model: str) -> tuple[bool, str]:
-    if is_demo(provider):
-        return True, "演示模式无需联网"
     try:
         out = await complete(
             provider, model,
