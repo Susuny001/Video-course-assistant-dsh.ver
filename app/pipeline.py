@@ -81,6 +81,8 @@ def _apply_refine(cues: list[dict], data: dict) -> int:
             by_i[int(it.get("i"))] = it
         except Exception:
             continue
+    if cues and 0 not in by_i and 1 in by_i and len(by_i) == len(cues):
+        by_i = {k - 1: v for k, v in by_i.items()}  # 模型从 1 开始编号时兜底
     n = 0
     for i, c in enumerate(cues):
         it = by_i.get(i)
@@ -323,6 +325,28 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                 db.replace_cues(vid, all_cues)
         else:
             db.update_job(jid, progress=83, message="跳过 AI 纠错")
+            if translation_lang and translation_lang != "none":
+                step = 30
+                for i in range(0, len(all_cues), step):
+                    _check(jid)
+                    part = all_cues[i:i + step]
+                    try:
+                        if txt_demo:
+                            data = demo.demo_refine(part, translation_lang)
+                        else:
+                            out = await llm.complete(
+                                txt_p, txt_m, prompts.translate_messages(part, translation_lang, glossary),
+                                think=False, temperature=0.2, json_mode=True,
+                                max_tokens=min(6000, 120 * len(part) + 400),
+                            )
+                            data = llm.parse_json_loose(out)
+                        _apply_refine(part, data)
+                    except Exception as e:  # noqa: BLE001
+                        db.update_job(jid, log_line=f"翻译失败：{str(e)[:100]}")
+                        break
+                    db.replace_cues(vid, all_cues)
+                    db.update_job(jid, progress=round(83 + 10 * (i + step) / max(1, len(all_cues)), 1),
+                                  message="翻译字幕")
         _check(jid)
 
         # ---------------- 分段 + 摘要
