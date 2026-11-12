@@ -170,11 +170,17 @@ a{color:var(--accent)}
 .audio-wave i:nth-child(9){height:16px;animation-delay:.8s}
 @keyframes wv{0%,100%{transform:scaleY(.5)}50%{transform:scaleY(1.15)}}
 .subtitle{
-  position:absolute;left:0;right:0;bottom:14px;text-align:center;padding:0 8%;
-  pointer-events:none;text-shadow:0 2px 10px rgba(0,0,0,.95);
+  position:absolute;left:0;right:0;bottom:16px;text-align:center;padding:0 5%;
+  pointer-events:none;
 }
-.sub-line{font-size:26px;line-height:1.45;font-weight:600;color:#fff;text-shadow:0 2px 6px #000,0 0 18px rgba(0,0,0,.8)}
-.sub-tr{font-size:17px;color:#a9c6ff;font-weight:500;margin-top:2px;opacity:.95}
+.sub-box{
+  display:inline-block;max-width:100%;background:rgba(16,20,28,.55);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  border:1px solid rgba(255,255,255,.08);border-radius:12px;
+  padding:7px 18px 9px;box-shadow:0 8px 28px rgba(0,0,0,.38);
+}
+.sub-line{font-size:26px;line-height:1.4;font-weight:600;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.85)}
+.sub-tr{font-size:17px;color:#a9c6ff;font-weight:500;margin-top:3px;opacity:.96}
 .center-flash{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:76px;height:76px;border-radius:50%;
   background:rgba(12,18,30,.62);display:grid;place-items:center;opacity:0;pointer-events:none;transition:.18s}
 .center-flash .ico{width:34px;height:34px}

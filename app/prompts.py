@@ -11,11 +11,12 @@ def lang_name(code: str) -> str:
     return LANG_NAMES.get(code or "", code or "")
 
 
-REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家。用户会给你一段课堂录音的机器转写（可能有同音字、术语、人名、数字错误），以及同一时间段的课堂画面截图。
+REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家。用户会给你一段课堂录音的机器转写（可能有同音字、术语、人名、数字错误），以及同一时间段的课堂画面截图或画面 OCR 文字。
 
 你的任务：
-1. 结合画面（PPT/板书/软件界面/图纸）和上下文，修正转写中的错别字、同音词、专业术语、数字、英文缩写、人名。画面是最可靠的依据，上下文语义是第二依据。
-2. 绝对不能凭空编造课堂没有讲的内容；实在无法确定的地方保留原样，不要瞎猜。
+1. 结合画面/OCR 文字和上下文，修正转写中的错别字、同音词、专业术语、数字、英文缩写、人名。画面文字最可靠，上下文语义次之。
+2. OCR 文字本身可能有错，只用来核对术语、公式、代码和数字，不要整段照抄，也不要凭空编造课堂没讲的内容。
+3. 实在无法确定的地方保留原样，不要瞎猜。
 3. 去掉“啊、呃、就是说、对吧”这类纯口癖和重复，但保留老师的语气和完整语义。
 4. 合理断句，每句 8~45 个汉字为宜，不要把一句话拆得太碎。
 5. 按要求的语言输出译文（如果要求翻译）。
@@ -33,7 +34,7 @@ REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家�
 def refine_messages(cues: list[dict], *, glossary: str = "",
                     term_policy: str = "keep_en", translation_lang: str = "en",
                     context_before: str = "", context_after: str = "",
-                    frames: list[str] | None = None,
+                    frames: list[str] | None = None, screen_text: str = "",
                     course: str = "") -> list[dict]:
     body = {
         "课程": course,
@@ -41,6 +42,7 @@ def refine_messages(cues: list[dict], *, glossary: str = "",
         "是否需要翻译": bool(translation_lang and translation_lang != "none"),
         "译文语言": lang_name(translation_lang) if translation_lang != "none" else "",
         "用户术语表": glossary,
+        "画面OCR文字（可能有识别错误，仅作核对）": (screen_text or "")[:4000],
         "上一段结尾": context_before[-300:],
         "下一段开头": context_after[-300:],
         "待校对转写": [{"i": i, "t": round(c["start"], 1), "raw": c.get("raw") or c.get("text", "")}
@@ -58,13 +60,19 @@ def refine_messages(cues: list[dict], *, glossary: str = "",
     ]
 
 
-TRANSLATE_SYSTEM = """你是专业字幕翻译。把给定的句子翻译成目标语言，保持术语准确、口语自然、长度适合做字幕。
-只输出 JSON：{"cues":[{"i":0,"translation":"..."}]}，i 与输入一一对应，不要输出别的。"""
+TRANSLATE_SYSTEM = """你是专业字幕组翻译，做英译中“熟肉”。要求：
+1. 忠实原意，不增删、不总结、不改写；听不懂或原文明显是识别噪声时，translation 留空，绝对不要编造。
+2. 计算机/工程术语用国内通行译法，首次出现可保留英文原词；同一个词全课保持一致。
+3. 代码、命令、公式、数字、单位、缩写原样保留。
+4. 口语自然，但不加原文没有的语气词；每句译文长度尽量与原文相当，适合做字幕。
+5. 只输出 JSON：{"cues":[{"i":0,"translation":"..."}]}，i 与输入一一对应，不要输出任何解释。"""
 
 
-def translate_messages(cues: list[dict], target: str, glossary: str = "") -> list[dict]:
+def translate_messages(cues: list[dict], target: str = "zh", glossary: str = "",
+                       course: str = "") -> list[dict]:
     import json
     payload = {
+        "课程": course,
         "目标语言": lang_name(target),
         "术语表": glossary,
         "句子": [{"i": i, "text": c.get("text", "")} for i, c in enumerate(cues)],

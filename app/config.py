@@ -14,7 +14,7 @@ from pathlib import Path
 APP_NAME = "云课助手"
 VERSION = "1.0.0"
 
-_lock = threading.Lock()
+_lock = threading.RLock()  # save_settings 内部会再次 load_settings，必须可重入
 
 
 def app_root() -> Path:
@@ -107,11 +107,44 @@ DEFAULT_PROVIDERS = [
         "name": "智谱 GLM（glm-4-flash 免费）",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "api_key": "",
-        "models": ["glm-4-flash", "glm-4-air", "glm-4-plus", "glm-4v-flash", "glm-4.5-air"],
+        "models": ["glm-4.7-flash", "glm-4v-flash", "glm-4-flash", "glm-4.5-air"],
         "asr_models": [],
         "vision": True,
-        "notes": "glm-4-flash 与 glm-4v-flash 目前免费，适合白嫖。",
+        "notes": "glm-4-flash 与 glm-4v-flash 免费；glm-4.7-flash 用于文本和分段。",
         "docs": "https://open.bigmodel.cn/usercenter/apikeys",
+    },
+    {
+        "id": "xfyun",
+        "name": "讯飞 MaaS（OCR 专用）",
+        "base_url": "https://maas-api.cn-huabei-1.xf-yun.com/v2",
+        "api_key": "",
+        "models": ["xoppaddleocrv16", "xopdeepseekocr", "xophunyuanocr", "spark-x2.6-4b"],
+        "asr_models": [],
+        "vision": True,
+        "notes": "PaddleOCR-VL-1.6 / DeepSeek-OCR / HunyuanOCR 用来识别课堂画面文字，免费额度；只做 OCR，不参与对话。",
+        "docs": "https://maas.xfyun.cn/modelService?platform=maas",
+    },
+    {
+        "id": "deepseek",
+        "name": "DeepSeek 官方",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "models": ["deepseek-chat", "deepseek-reasoner"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "OpenAI 兼容；deepseek-chat 普通对话，deepseek-reasoner 带思考。不支持语音和看图，外语课翻译/分段可接这里。",
+        "docs": "https://platform.deepseek.com/api_keys",
+    },
+    {
+        "id": "groq",
+        "name": "Groq（Whisper 语音识别）",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": "",
+        "models": ["llama-3.3-70b-versatile"],
+        "asr_models": ["whisper-large-v3", "whisper-large-v3-turbo"],
+        "vision": False,
+        "notes": "语音识别免费额度，速度快，返回句级时间戳；Key 在控制台 API Keys 创建。",
+        "docs": "https://console.groq.com/keys",
     },
     {
         "id": "openrouter",
@@ -142,6 +175,48 @@ DEFAULT_PROVIDERS = [
 ]
 
 
+# 各模型同时在途请求上限。免费额度按官方文档/实测取“不会再触发 429 的最大值”，
+# 宁可略保守也不要整批失败；数字可按账号等级在 config.json 的 "limits" 里覆盖。
+CONCURRENCY = {
+    "siliconflow": 4,
+    "dashscope": 2,
+    "zhipu": 4,
+    "groq": 4,
+    "openrouter": 2,
+    "ollama": 2,
+    "xfyun": 6,
+    "deepseek": 16,
+}
+MODEL_CONCURRENCY = {
+    "glm-4.7-flash": 4,
+    "glm-4v-flash": 4,
+    "glm-4.5-flash": 8,
+    "glm-4-flash": 12,
+    "spark-x2.6-4b": 6,
+    "xoppaddleocrv16": 6,
+    "xopdeepseekocr": 6,
+    "xophunyuanocr": 6,
+    "whisper-large-v3": 4,
+    "whisper-large-v3-turbo": 4,
+}
+
+
+def model_concurrency(provider: dict, model: str) -> int:
+    """单个模型的并发上限；模型级优先，其次服务商级，最后兜底 2。"""
+    s = load_settings()
+    limits = s.get("limits") or {}
+    pid = (provider or {}).get("id", "")
+    per_model = limits.get("models") or {}
+    n = per_model.get(f"{pid}/{model}") or per_model.get(model)
+    if not n:
+        n = (limits.get("providers") or {}).get(pid) or MODEL_CONCURRENCY.get(model) \
+            or CONCURRENCY.get(pid) or 2
+    try:
+        return max(1, int(n))
+    except Exception:
+        return 2
+
+
 def default_settings() -> dict:
     return {
         "providers": json.loads(json.dumps(DEFAULT_PROVIDERS, ensure_ascii=False)),
@@ -153,7 +228,7 @@ def default_settings() -> dict:
         },
         "ui": {
             "subtitle_lang": "zh",
-            "translation_lang": "en",
+            "translation_lang": "zh",
             "term_policy": "keep_en",
             "frames_per_chunk": 4,
             "asr_chunk_seconds": 300,
@@ -186,6 +261,12 @@ def load_settings(force: bool = False) -> dict:
                 base = _deep_merge(base, saved)
             except Exception:
                 pass
+        # 升级时补齐新增的内置服务商，不覆盖用户已保存的 Key
+        have = {p.get("id") for p in base.get("providers") or []}
+        for p in DEFAULT_PROVIDERS:
+            if p["id"] not in have:
+                base.setdefault("providers", []).append(
+                    json.loads(json.dumps(p, ensure_ascii=False)))
         _settings_cache = base
         return base
 
@@ -244,6 +325,42 @@ def resolve_role(role: str) -> tuple[dict, str]:
             raise RuntimeError(f"「{provider['name']}」没有可用模型，请到设置里填写。")
         model = pool[0]
     return provider, model
+
+
+def role_candidates(role: str) -> list[tuple[dict, str]]:
+    """主模型 + 同服务商备用 + 其它已配置服务商，按顺序自动切换。"""
+    s = load_settings()
+    cfg = s["roles"].get(role) or {}
+    out: list[tuple[dict, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(p: dict | None, model: str | None) -> None:
+        if not p or not model or not provider_ready(p["id"]):
+            return
+        key = (p["id"], model)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((p, model))
+
+    prim = get_provider(cfg.get("provider", ""))
+    if prim:
+        add(prim, cfg.get("model"))
+    for fb in cfg.get("fallbacks") or []:
+        add(get_provider(fb.get("provider", "")), fb.get("model"))
+    if prim:
+        pool = prim.get("asr_models") if role == "asr" else prim.get("models")
+        for m in pool or []:
+            add(prim, m)
+    for p in s["providers"]:
+        if p.get("id") == "xfyun":
+            continue  # OCR 专用，不参与对话/纠错候选
+        if role == "refine" and not p.get("vision"):
+            continue
+        pool = p.get("asr_models") if role == "asr" else p.get("models")
+        for m in pool or []:
+            add(p, m)
+    return out
 
 
 def new_id(prefix: str = "") -> str:

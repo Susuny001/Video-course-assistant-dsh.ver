@@ -11,7 +11,21 @@ from typing import AsyncIterator
 
 import httpx
 
+from .config import model_concurrency, role_candidates
+
 SYSTEM_ERROR = "模型调用失败"
+
+_sems: dict[tuple[str, str], asyncio.Semaphore] = {}
+
+
+def _sem(provider: dict, model: str) -> asyncio.Semaphore:
+    """同一模型共用一个信号量，把并发压到额度上限，避免整批 429。"""
+    key = ((provider or {}).get("id", ""), model or "")
+    sem = _sems.get(key)
+    if sem is None:
+        sem = asyncio.Semaphore(model_concurrency(provider, model))
+        _sems[key] = sem
+    return sem
 
 
 def _headers(provider: dict) -> dict:
@@ -29,7 +43,7 @@ def _reasoning_payload(provider: dict, model: str, think: bool) -> dict:
     pid = provider.get("id", "")
     m = (model or "").lower()
     extra: dict = {}
-    if "qwen3" in m or "glm-4.5" in m or "deepseek-v3.1" in m:
+    if pid in ("siliconflow", "dashscope") and ("qwen3" in m or "deepseek-v3.1" in m):
         extra["enable_thinking"] = bool(think)
     if pid == "zhipu" and "glm-4.5" in m:
         extra["thinking"] = {"type": "enabled" if think else "disabled"}
@@ -61,10 +75,19 @@ def vision_message(text: str, frames: list[str], detail: str = "low") -> dict:
     return {"role": "user", "content": content}
 
 
+def _clamp_max_tokens(provider: dict, model: str, n: int | None) -> int | None:
+    """智谱的视觉模型输出上限是 1024，超了直接 400。"""
+    if not n:
+        return n
+    if provider.get("id") == "zhipu" and ("4v" in (model or "").lower() or "vision" in (model or "").lower()):
+        return min(n, 1024)
+    return n
+
+
 async def complete(provider: dict, model: str, messages: list[dict], *,
                    think: bool = False, temperature: float = 0.4,
                    max_tokens: int | None = None, timeout: float = 900,
-                   json_mode: bool = False) -> str:
+                   json_mode: bool = False, attempts: int = 4) -> str:
     url = provider["base_url"].rstrip("/") + "/chat/completions"
     payload: dict = {
         "model": model,
@@ -72,29 +95,61 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
         "temperature": temperature,
         "stream": False,
     }
-    if max_tokens:
-        payload["max_tokens"] = max_tokens
+    mt = _clamp_max_tokens(provider, model, max_tokens)
+    if mt:
+        payload["max_tokens"] = mt
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     payload.update(_reasoning_payload(provider, model, think))
 
     last_err = ""
-    for attempt in range(3):
+    for attempt in range(max(1, attempts)):
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.post(url, headers=_headers(provider), json=payload)
+            async with _sem(provider, model):
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    r = await client.post(url, headers=_headers(provider), json=payload)
             if r.status_code == 200:
                 data = r.json()
-                return (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                ch = (data.get("choices") or [{}])[0] or {}
+                content = (ch.get("message") or {}).get("content") or ""
+                if content.strip():
+                    return content
+                # 有的模型/网关不支持 json_object 会回 200 + 空内容，去掉再试一次
+                last_err = f"HTTP 200 空内容（finish_reason={ch.get('finish_reason')}）"
+                if payload.pop("response_format", None) is not None:
+                    continue
+                break
             last_err = f"HTTP {r.status_code}: {r.text[:400]}"
+            if r.status_code == 429:
+                if attempts <= 1:
+                    break
+                await asyncio.sleep(3.0 * (attempt + 1))
+                continue
             if r.status_code == 400 and payload.pop("response_format", None) is not None:
                 continue  # 有些服务商不支持 json_object，退回普通输出再解析
             if r.status_code in (400, 401, 403, 404):
                 break
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
-        await asyncio.sleep(1.5 * (attempt + 1))
+        if attempts > 1:
+            await asyncio.sleep(1.2 * (attempt + 1))
     raise RuntimeError(f"{SYSTEM_ERROR}：{last_err}")
+
+
+async def complete_role(role: str, messages: list[dict], *, cycles: int = 2,
+                        timeout: float = 120, **kw) -> str:
+    """按角色依次尝试主模型和备用模型；单个模型失败立刻换下一个。"""
+    cands = role_candidates(role)
+    if not cands:
+        raise RuntimeError("没有可用模型，请到设置里配置 API Key 和模型。")
+    errs: list[str] = []
+    for _cycle in range(max(1, cycles)):
+        for p, m in cands:
+            try:
+                return await complete(p, m, messages, attempts=1, timeout=timeout, **kw)
+            except Exception as e:  # noqa: BLE001
+                errs.append(f"{p['name']}/{m}: {str(e)[:90]}")
+    raise RuntimeError("所有模型都失败：" + " | ".join(errs[-4:]))
 
 
 async def stream(provider: dict, model: str, messages: list[dict], *,
@@ -111,25 +166,53 @@ async def stream(provider: dict, model: str, messages: list[dict], *,
         payload["max_tokens"] = max_tokens
     payload.update(_reasoning_payload(provider, model, think))
 
-    async with httpx.AsyncClient(timeout=900) as client:
-        async with client.stream("POST", url, headers=_headers(provider), json=payload) as r:
-            if r.status_code != 200:
-                body = (await r.aread()).decode("utf-8", "replace")
-                raise RuntimeError(f"{SYSTEM_ERROR}：HTTP {r.status_code}: {body[:400]}")
-            async for line in r.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except Exception:
-                    continue
-                delta = (obj.get("choices") or [{}])[0].get("delta") or {}
-                piece = delta.get("content") or ""
-                if piece:
+    async with _sem(provider, model):
+        async with httpx.AsyncClient(timeout=900) as client:
+            async with client.stream("POST", url, headers=_headers(provider), json=payload) as r:
+                if r.status_code != 200:
+                    body = (await r.aread()).decode("utf-8", "replace")
+                    raise RuntimeError(f"{SYSTEM_ERROR}：HTTP {r.status_code}: {body[:400]}")
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except Exception:
+                        continue
+                    delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+                    piece = delta.get("content") or ""
+                    if piece:
+                        yield piece
+
+
+async def stream_role(role: str, messages: list[dict], *, preferred: tuple[dict, str] | None = None,
+                      cycles: int = 2, **kw) -> AsyncIterator[str]:
+    """流式问答的备用模型切换：连不上或首字都没出就换下一个。"""
+    cands = role_candidates(role)
+    if preferred:
+        cands = [preferred] + [(p, m) for p, m in cands
+                               if (p["id"], m) != (preferred[0]["id"], preferred[1])]
+    if not cands:
+        raise RuntimeError("没有可用模型，请到设置里配置。")
+    errs: list[str] = []
+    for _cycle in range(max(1, cycles)):
+        for p, m in cands:
+            started = False
+            try:
+                async for piece in stream(p, m, messages, **kw):
+                    started = True
                     yield piece
+                if started:
+                    return
+                errs.append(f"{p['name']}/{m}: 空响应")
+            except Exception as e:  # noqa: BLE001
+                if started:
+                    raise
+                errs.append(f"{p['name']}/{m}: {str(e)[:90]}")
+    raise RuntimeError("所有模型都失败：" + " | ".join(errs[-3:]))
 
 
 def parse_json_loose(text: str) -> dict:

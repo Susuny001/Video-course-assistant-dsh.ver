@@ -105,9 +105,12 @@ async def import_videos(body: dict = Body(default={})):
 
 @router.post("/import/dialog")
 async def import_dialog(body: dict = Body(default={})):
-    files = await asyncio.to_thread(dialog.pick_files, "video", True)
+    kind = body.get("kind", "video")
+    files = await asyncio.to_thread(dialog.pick_files, kind, kind == "video")
     if not files:
         return {"ok": False, "videos": [], "paths": []}
+    if kind != "video":
+        return {"ok": True, "paths": files}
     return await import_videos({"paths": files})
 
 
@@ -307,8 +310,9 @@ async def keywords(vid: str, body: dict = Body(...)):
         used_ai = True
         try:
             passages = [{"id": i, "t": round(h["start"]), "text": h["text"]} for i, h in enumerate(hits[:40])]
-            out = await llm.complete(p, mid, prompts.keyword_messages(kws, passages),
-                                     think=False, temperature=0.1, json_mode=True, max_tokens=1600)
+            out = await llm.complete_role("text", prompts.keyword_messages(kws, passages),
+                                          think=False, temperature=0.1, json_mode=True,
+                                          max_tokens=1600)
             data = llm.parse_json_loose(out)
             ids = {int(x.get("id")): x.get("why", "") for x in data.get("hits", [])
                    if isinstance(x, dict) and str(x.get("id", "")).isdigit()}
@@ -322,8 +326,9 @@ async def keywords(vid: str, body: dict = Body(...)):
         try:
             passages = [{"id": i, "t": round(s["start"]), "text": f"{s['title']}：{s['abstract']}"}
                         for i, s in enumerate(segs)]
-            out = await llm.complete(p, mid, prompts.keyword_messages(kws, passages),
-                                     think=False, temperature=0.2, json_mode=True, max_tokens=1200)
+            out = await llm.complete_role("text", prompts.keyword_messages(kws, passages),
+                                          think=False, temperature=0.2, json_mode=True,
+                                          max_tokens=1200)
             data = llm.parse_json_loose(out)
             for x in data.get("hits", []):
                 try:
@@ -458,8 +463,6 @@ async def chat(body: dict = Body(...)):
         user_msg += f"\n\n（我选中的片段：{prompts.fmt_ts(sel['start'])} - {prompts.fmt_ts(sel['end'])}）"
     db.add_message(cid, "user", text, {"selection": sel})
 
-    if not p or not (p.get("api_key") or "").strip():
-        raise HTTPException(400, "答疑模型还没有配置 API Key，请先到设置里填写。")
     frames: list[str] = []
     if body.get("include_frames") and sel:
         frames = await asyncio.to_thread(_frames_in_range, v, sel["start"], sel["end"], 4)
@@ -471,8 +474,9 @@ async def chat(body: dict = Body(...)):
     async def gen():
         acc = []
         try:
-            async for piece in llm.stream(p, model, msgs, think=think,
-                                          temperature=float(body.get("temperature") or 0.4)):
+            async for piece in llm.stream_role(
+                    "chat", msgs, preferred=(p, model) if (p and model) else None,
+                    think=think, temperature=float(body.get("temperature") or 0.4)):
                 acc.append(piece)
                 yield piece
         except Exception as e:  # noqa: BLE001

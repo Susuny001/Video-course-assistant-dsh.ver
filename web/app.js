@@ -609,7 +609,9 @@
   function openAnalyze() {
     if (!state.cur) return;
     const ui = state.settings.ui;
-    $("#anTrLang").value = ui.translation_lang || "en";
+    const meta = state.cur.meta || {};
+    $("#anSub").value = meta.subtitle_path || "";
+    $("#anTrLang").value = ui.translation_lang || "zh";
     $("#anTerm").value = ui.term_policy || "keep_en";
     $("#anSkip").checked = false;
     const roles = state.settings.roles;
@@ -630,6 +632,7 @@
     const btn = $("#btnStartAnalyze");
     btn.disabled = true;
     const body = {
+      subtitle_path: $("#anSub").value.trim(),
       translation_lang: $("#anTrLang").value,
       term_policy: $("#anTerm").value,
       skip_refine: $("#anSkip").checked,
@@ -700,12 +703,12 @@
           <span class="muted small">${p.api_key ? "已配置" : (p.id === "ollama" ? "无需 Key" : "未配置")}</span>
         </div>
         <div class="provider-body">
-          <label class="field"><span>名称</span><input data-k="name" value="${esc(p.name)}"></label>
-          <label class="field"><span>Base URL</span><input data-k="base_url" value="${esc(p.base_url)}"></label>
-          <label class="field"><span>API Key</span><input data-k="api_key" type="password" value="${esc(p.api_key)}" placeholder="sk-..."></label>
+          <label class="field"><span>名称</span><input id="name-${p.id}" data-k="name" value="${esc(p.name)}"></label>
+          <label class="field"><span>Base URL</span><input id="base-${p.id}" data-k="base_url" value="${esc(p.base_url)}"></label>
+          <label class="field"><span>API Key</span><input id="key-${p.id}" data-k="api_key" type="password" value="${esc(p.api_key)}" placeholder="${esc(p.name)} 的 Key" aria-label="${esc(p.name)} API Key"></label>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <label class="field"><span>对话 / 视觉模型（每行一个）</span><textarea data-k="models" rows="4">${esc((p.models || []).join("\n"))}</textarea></label>
-            <label class="field"><span>语音识别模型</span><textarea data-k="asr_models" rows="4">${esc((p.asr_models || []).join("\n"))}</textarea></label>
+            <label class="field"><span>对话 / 视觉模型（每行一个）</span><textarea id="models-${p.id}" data-k="models" rows="4">${esc((p.models || []).join("\n"))}</textarea></label>
+            <label class="field"><span>语音识别模型</span><textarea id="asr-${p.id}" data-k="asr_models" rows="4">${esc((p.asr_models || []).join("\n"))}</textarea></label>
           </div>
           <div class="row between">
             <div class="prov-note">${p.notes ? esc(p.notes) : ""}${p.docs ? ` <a href="${esc(p.docs)}" target="_blank">获取 Key</a>` : ""}</div>
@@ -877,6 +880,10 @@
     $("#brandHome").addEventListener("click", () => $("#btnBack").click());
     $("#btnReanalyze").addEventListener("click", openAnalyze);
     $("#btnStartAnalyze").addEventListener("click", startAnalyze);
+    $("#btnPickSub").addEventListener("click", async () => {
+      const r = await api("/api/import/dialog", { method: "POST", body: { kind: "subtitle" } });
+      if (r.paths?.[0]) $("#anSub").value = r.paths[0];
+    });
     $("#btnExportMenu").addEventListener("click", (e) => {
       e.stopPropagation();
       $("#exportMenu").classList.toggle("open");

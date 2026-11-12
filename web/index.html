@@ -107,8 +107,10 @@
           <div class="audio-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
         </div>
         <div class="subtitle" id="subtitle">
-          <div class="sub-line" id="subText"></div>
-          <div class="sub-line sub-tr" id="subTr"></div>
+          <div class="sub-box">
+            <div class="sub-line" id="subText"></div>
+            <div class="sub-line sub-tr" id="subTr"></div>
+          </div>
         </div>
         <div class="center-flash" id="centerFlash"><svg class="ico"><use href="#i-play"/></svg></div>
       </div>
@@ -241,8 +243,7 @@
           </label>
           <label class="field"><span>译文语言</span>
             <select id="uiTrLang">
-              <option value="none">不翻译</option><option value="en">English</option>
-              <option value="zh">中文</option><option value="ja">日本語</option>
+              <option value="zh">外语课翻译成中文</option><option value="none">不翻译</option>
             </select>
           </label>
           <label class="field"><span>术语处理</span>
@@ -274,9 +275,14 @@
     </div>
     <div class="modal-body">
       <div class="form-grid">
+        <label class="field full"><span>已有字幕 SRT（可选，外语课有 CC 时直接用）</span>
+          <div class="row gap8">
+            <input id="anSub" placeholder="选择该课程的字幕文件，留空则自动语音识别">
+            <button class="btn ghost sm" id="btnPickSub">选择</button>
+          </div>
+        </label>
         <label class="field"><span>译文语言</span>
-          <select id="anTrLang"><option value="en">English</option><option value="none">不翻译</option>
-            <option value="zh">中文</option><option value="ja">日本語</option></select>
+          <select id="anTrLang"><option value="zh">外语课翻译成中文</option><option value="none">不翻译</option></select>
         </label>
         <label class="field"><span>术语</span>
           <select id="anTerm"><option value="keep_en">专业名词保留英文</option><option value="none">全部中文</option></select>
