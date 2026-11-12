@@ -1000,10 +1000,16 @@
         : "未检测到 ffmpeg，请先运行 setup.bat 安装";
       fillChatModels();
       applySubtitleStyle();
+      try {
+        const p = await api("/api/ping");
+        if (!p.samples) $("#btnDemo").classList.add("hidden");
+      } catch (e) {}
     } catch (e) {
       toast("无法连接本地服务：" + e.message, "err");
     }
     await loadVideos();
+    const m = location.hash.match(/v=([a-z0-9]+)/i);
+    if (m) openPlayer(m[1]).catch(() => {});
   }
 
   init();

@@ -121,8 +121,8 @@ def demo_chat(question: str, cues: list[dict], segments: list[dict],
         t = ranked[0]["start"]
         seg = next((s for s in segments if s["start"] <= t <= s["end"]), None)
 
-    lines = ["> 演示模式：没有配置大模型 API，下面是本地检索到的课堂原文。"
-             "在「设置」里填入任意 OpenAI 兼容的 Key（硅基流动可白嫖）后即可获得真正的 AI 回答。", ""]
+    lines = ["> 演示模式：未配置大模型 API，以下是本地检索到的课堂原文。"
+             "在「设置」里填入任意 OpenAI 兼容的 Key 后即可获得真正的 AI 回答。", ""]
     if seg:
         lines += [f"**所属分段：{seg['title']}**", seg.get("abstract", ""), ""]
     if ranked:

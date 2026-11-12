@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>云课助手 DSH</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%234d8dff'/%3E%3Cpath d='M18 40c0-5 4-9 9-9 1-6 6-10 12-10 7 0 12 5 12 12 0 1 0 2-1 3h2c3 0 5 2 5 5s-2 5-5 5H22c-2 0-4-2-4-4z' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -24,10 +25,7 @@
 <header class="topbar">
   <div class="brand" id="brandHome">
     <span class="logo">云</span>
-    <div>
-      <b>云课助手</b>
-      <small>听课 · 双语字幕 · 白话精讲</small>
-    </div>
+    <div><b>云课助手</b></div>
   </div>
   <div class="top-actions">
     <div class="searchbox" id="libSearchWrap">
@@ -42,23 +40,13 @@
 <main id="view-library" class="view">
   <section class="hero">
     <div>
-      <h1>把一节课，嚼碎了喂给你</h1>
-      <p>上传网课录音或视频，自动转写、结合画面纠错、双语字幕、分段摘要，还能就任意片段直接问 AI。</p>
+      <h1>课程库</h1>
+      <p>导入网课视频或录音，自动转写并结合课堂画面纠错，生成双语字幕、分段摘要和可导出的笔记；选中任意片段可以直接问 AI。</p>
       <div class="hero-actions">
         <button class="btn primary lg" id="btnImport2">选择课程文件</button>
         <button class="btn ghost lg" id="btnDemo">导入示例课程</button>
       </div>
       <div class="hint" id="envHint"></div>
-    </div>
-    <div class="hero-art">
-      <div class="art-card">
-        <div class="art-line w1"></div>
-        <div class="art-line w2"></div>
-        <div class="art-chip">01:24</div>
-        <div class="art-sub">剖视图 · section view</div>
-        <div class="art-bar"><i></i></div>
-        <div class="art-caption">剖视图就是假想一个平面，把机件剖开。</div>
-      </div>
     </div>
   </section>
 
