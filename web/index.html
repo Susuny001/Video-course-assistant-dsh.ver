@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>云课助手 DSH</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<svg style="display:none">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.7 5.3 8 12l6.7 6.7 1.4-1.4L10.8 12l5.3-5.3z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm9 3.5c0-.6-.1-1.1-.2-1.7l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.5-.9L16.6 3h-4l-.4 2.5c-.5.2-1 .5-1.5.9l-2.3-1-2 3.4 2 1.5a8 8 0 0 0 0 3.4l-2 1.5 2 3.4 2.3-1c.5.4 1 .7 1.5.9l.4 2.5h4l.4-2.5c.5-.2 1-.5 1.5-.9l2.3 1 2-3.4-2-1.5c.1-.6.2-1.1.2-1.7z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M6 7h12l-1 13H7L6 7zm3-3h6l1 2H8l1-2z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M10.5 4a6.5 6.5 0 1 0 4.1 11.5l4.2 4.2 1.4-1.4-4.2-4.2A6.5 6.5 0 0 0 10.5 4zm0 2a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 11 18-7-7 18-2.5-7.5z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></symbol>
+  <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3l5 5h-3v6h-4V8H7l5-5zM5 18h14v2H5z"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="brand" id="brandHome">
+    <span class="logo">云</span>
+    <div>
+      <b>云课助手</b>
+      <small>听课 · 双语字幕 · 白话精讲</small>
+    </div>
+  </div>
+  <div class="top-actions">
+    <div class="searchbox" id="libSearchWrap">
+      <svg class="ico"><use href="#i-search"/></svg>
+      <input id="libSearch" placeholder="搜索课程">
+    </div>
+    <button class="btn ghost" id="btnSettings"><svg class="ico"><use href="#i-gear"/></svg>设置</button>
+    <button class="btn primary" id="btnImport"><svg class="ico"><use href="#i-plus"/></svg>导入课程</button>
+  </div>
+</header>
+
+<main id="view-library" class="view">
+  <section class="hero">
+    <div>
+      <h1>把一节课，嚼碎了喂给你</h1>
+      <p>上传网课录音或视频，自动转写、结合画面纠错、双语字幕、分段摘要，还能就任意片段直接问 AI。</p>
+      <div class="hero-actions">
+        <button class="btn primary lg" id="btnImport2">选择课程文件</button>
+        <button class="btn ghost lg" id="btnDemo">导入示例课程</button>
+      </div>
+      <div class="hint" id="envHint"></div>
+    </div>
+    <div class="hero-art">
+      <div class="art-card">
+        <div class="art-line w1"></div>
+        <div class="art-line w2"></div>
+        <div class="art-chip">01:24</div>
+        <div class="art-sub">剖视图 · section view</div>
+        <div class="art-bar"><i></i></div>
+        <div class="art-caption">剖视图就是假想一个平面，把机件剖开。</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-head">
+    <h2>我的课程</h2>
+    <span id="libCount" class="muted"></span>
+  </div>
+  <div id="libGrid" class="grid"></div>
+  <div id="libEmpty" class="empty hidden">
+    <div class="empty-ico">◒</div>
+    <h3>还没有课程</h3>
+    <p>支持 mp4 / mkv / avi / mov / mp3 / m4a 等格式。分析后会生成双语字幕、分段摘要和可导出的笔记。</p>
+    <button class="btn primary" id="btnImport3">导入第一个课程</button>
+  </div>
+</main>
+
+<main id="view-player" class="view hidden">
+  <div class="player-head">
+    <button class="icon-btn" id="btnBack" title="返回课程库"><svg class="ico"><use href="#i-back"/></svg></button>
+    <div class="ph-title">
+      <h2 id="pTitle">课程</h2>
+      <div class="muted" id="pMeta"></div>
+    </div>
+    <div class="ph-actions">
+      <div class="jobbar hidden" id="jobBar">
+        <div class="jobbar-fill" id="jobFill"></div>
+        <span id="jobText">分析中…</span>
+      </div>
+      <button class="btn ghost sm" id="btnReanalyze">重新分析</button>
+      <button class="btn ghost sm" id="btnExport">字幕<svg class="ico"><use href="#i-export"/></svg></button>
+      <div class="menu-anchor">
+        <button class="btn ghost sm" id="btnExportMenu">SRT / 笔记 / JSON</button>
+        <div class="menu" id="exportMenu">
+          <button data-fmt="srt">导出双语 SRT</button>
+          <button data-fmt="md">导出分段笔记 Markdown</button>
+          <button data-fmt="json">导出完整 JSON</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="player-layout">
+    <aside class="segments-pane">
+      <div class="pane-head">
+        <span>课程分段</span>
+        <span class="muted" id="segCount"></span>
+      </div>
+      <div id="segList" class="seg-list"></div>
+      <div class="pane-foot">
+        <button class="btn ghost sm block" id="btnKeywordsJump">按关键词找重点</button>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="video-wrap" id="videoWrap">
+        <video id="video" playsinline preload="metadata"></video>
+        <div class="audio-cover hidden" id="audioCover">
+          <img id="audioCoverImg" alt="">
+          <div class="audio-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="subtitle" id="subtitle">
+          <div class="sub-line" id="subText"></div>
+          <div class="sub-line sub-tr" id="subTr"></div>
+        </div>
+        <div class="center-flash" id="centerFlash"><svg class="ico"><use href="#i-play"/></svg></div>
+      </div>
+
+      <div class="controls">
+        <div class="timeline" id="timeline">
+          <div class="tl-segments" id="tlSegments"></div>
+          <div class="tl-buffer" id="tlBuffer"></div>
+          <div class="tl-played" id="tlPlayed"></div>
+          <div class="tl-selection hidden" id="tlSelection"></div>
+          <div class="tl-head" id="tlHead"></div>
+          <div class="tl-tip" id="tlTip"></div>
+        </div>
+        <div class="ctrl-row">
+          <button class="icon-btn" id="btnPlay"><svg class="ico"><use href="#i-play"/></svg></button>
+          <button class="icon-btn sm" id="btnBack10" title="后退 10 秒">-10s</button>
+          <button class="icon-btn sm" id="btnFwd10" title="前进 10 秒">+10s</button>
+          <span class="time" id="timeNow">00:00</span>
+          <span class="muted">/</span>
+          <span class="time" id="timeTotal">00:00</span>
+          <span class="spacer"></span>
+          <div class="selection-tools">
+            <button class="chip" id="btnMarkA" title="标记选区起点（快捷键 [）">设 A</button>
+            <button class="chip" id="btnMarkB" title="标记选区终点（快捷键 ]）">设 B</button>
+            <span class="sel-label muted" id="selLabel"></span>
+            <button class="chip accent hidden" id="btnAskSel">就这段问 AI</button>
+            <button class="chip hidden" id="btnClearSel">清除</button>
+          </div>
+          <label class="switch" title="显示 / 隐藏字幕">
+            <input type="checkbox" id="subToggle" checked><span></span>字幕
+          </label>
+          <select class="mini-select" id="speedSel" title="播放速度">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1.0x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2.0x</option>
+          </select>
+          <button class="icon-btn sm" id="btnFull"><svg class="ico"><use href="#i-full"/></svg></button>
+        </div>
+      </div>
+
+      <div class="transcript-pane">
+        <div class="pane-head">
+          <span>字幕文稿</span>
+          <div class="row gap8">
+            <input class="mini-input" id="findCue" placeholder="在字幕中查找">
+            <button class="btn ghost sm" id="btnFollow">跟随播放</button>
+          </div>
+        </div>
+        <div id="cueList" class="cue-list"></div>
+      </div>
+    </section>
+
+    <aside class="side-pane">
+      <div class="tabs">
+        <button class="tab active" data-tab="summary">摘要</button>
+        <button class="tab" data-tab="chat">问答</button>
+        <button class="tab" data-tab="keywords">重点</button>
+      </div>
+
+      <div class="tab-body" id="tab-summary">
+        <div id="overviewBox" class="overview"></div>
+        <div id="segCards" class="seg-cards"></div>
+      </div>
+
+      <div class="tab-body hidden chat-body" id="tab-chat">
+        <div class="chat-tools">
+          <select id="chatModel" class="mini-select wide"></select>
+          <label class="switch small" title="让模型先思考再回答">
+            <input type="checkbox" id="thinkToggle" checked><span></span>思考
+          </label>
+          <label class="switch small" title="把选中片段对应的课堂画面发给视觉模型">
+            <input type="checkbox" id="frameToggle" checked><span></span>看画面
+          </label>
+          <button class="chip" id="btnNewChat" title="开始新对话">新对话</button>
+        </div>
+        <div class="chat-context hidden" id="chatContext">
+          <span id="chatContextText">未选择片段</span>
+          <button class="icon-btn xs" id="btnCtxClear"><svg class="ico"><use href="#i-close"/></svg></button>
+        </div>
+        <div class="chat-list" id="chatList"></div>
+        <div class="chat-input">
+          <textarea id="chatInput" rows="1" placeholder="问这节课的任何问题，Enter 发送，Shift+Enter 换行"></textarea>
+          <button class="icon-btn accent" id="btnSend"><svg class="ico"><use href="#i-send"/></svg></button>
+        </div>
+      </div>
+
+      <div class="tab-body hidden" id="tab-keywords">
+        <div class="kw-box">
+          <p class="muted">输入关键词（逗号分隔），从整节课里挑出相关讲解与时间点。例如：剖视图, 剖面线, 大作业</p>
+          <textarea id="kwInput" rows="2" placeholder="剖视图, 阶梯剖, 标准件"></textarea>
+          <div class="row gap8">
+            <button class="btn primary sm" id="btnKwSearch">提取重点</button>
+            <label class="switch small"><input type="checkbox" id="kwAi" checked><span></span>AI 精筛</label>
+          </div>
+        </div>
+        <div id="kwResults" class="kw-results"></div>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<div class="modal hidden" id="modalSettings">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3>设置</h3>
+      <button class="icon-btn" data-close="modalSettings"><svg class="ico"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-grid">
+        <div class="settings-main">
+          <h4>模型服务商 <span class="muted small">（OpenAI 兼容接口，Key 只保存在本机）</span></h4>
+          <div id="providerList" class="provider-list"></div>
+          <button class="btn ghost sm" id="btnAddProvider">+ 自定义服务商</button>
+        </div>
+        <div class="settings-side">
+          <h4>各环节用哪个模型</h4>
+          <label class="field"><span>语音识别</span><select id="role-asr"></select></label>
+          <label class="field"><span>画面纠错 / 翻译（需视觉）</span><select id="role-refine"></select></label>
+          <label class="field"><span>分段摘要 / 关键词</span><select id="role-text"></select></label>
+          <label class="field"><span>答疑默认模型</span><select id="role-chat"></select></label>
+
+          <h4 class="mt">字幕与分段</h4>
+          <label class="field"><span>转写语言</span>
+            <select id="uiSubLang">
+              <option value="auto">自动</option><option value="zh">中文</option>
+              <option value="en">English</option><option value="ja">日本語</option>
+            </select>
+          </label>
+          <label class="field"><span>译文语言</span>
+            <select id="uiTrLang">
+              <option value="none">不翻译</option><option value="en">English</option>
+              <option value="zh">中文</option><option value="ja">日本語</option>
+            </select>
+          </label>
+          <label class="field"><span>术语处理</span>
+            <select id="uiTerm">
+              <option value="keep_en">专业名词保留英文</option>
+              <option value="none">全部本地语言</option>
+            </select>
+          </label>
+          <label class="field"><span>每段时长（分钟）</span><input id="uiSegMin" type="number" min="2" max="30" step="1"></label>
+          <label class="field"><span>每段抽帧数</span><input id="uiFrames" type="number" min="0" max="8" step="1"></label>
+          <label class="field"><span>字幕字号</span><input id="uiFont" type="number" min="16" max="48" step="2"></label>
+          <label class="field"><span>常用术语表（可选）</span>
+            <textarea id="uiGlossary" rows="3" placeholder="例如：剖视图=section view, 肋板=rib"></textarea>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="muted small" id="saveHint"></span>
+      <button class="btn primary" id="btnSaveSettings">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="modalAnalyze">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>分析课程</h3>
+      <button class="icon-btn" data-close="modalAnalyze"><svg class="ico"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label class="field full"><span>参考文字稿（可选，强烈建议）</span>
+          <div class="row gap8">
+            <input id="anRef" placeholder="选择与录音对应的文字稿，纠错会准很多">
+            <button class="btn ghost sm" id="btnPickRef">选择</button>
+          </div>
+        </label>
+        <label class="field"><span>每段时长（分钟）</span><input id="anSegMin" type="number" min="2" max="30"></label>
+        <label class="field"><span>每段抽帧数（看画面纠错）</span><input id="anFrames" type="number" min="0" max="8"></label>
+        <label class="field"><span>译文语言</span>
+          <select id="anTrLang"><option value="en">English</option><option value="none">不翻译</option>
+            <option value="zh">中文</option><option value="ja">日本語</option></select>
+        </label>
+        <label class="field"><span>术语</span>
+          <select id="anTerm"><option value="keep_en">专业名词保留英文</option><option value="none">全部中文</option></select>
+        </label>
+        <label class="field switch-row"><span>跳过 AI 纠错（只转写，更快）</span>
+          <label class="switch"><input type="checkbox" id="anSkip"><span></span></label>
+        </label>
+      </div>
+      <div class="analyze-note" id="anRoleNote"></div>
+      <div class="analyze-progress hidden" id="anProgress">
+        <div class="progressbar"><i id="anProgressFill"></i></div>
+        <div class="row between"><span id="anMsg">准备中</span><span id="anPct">0%</span></div>
+        <div class="job-log" id="anLog"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close="modalAnalyze">取消</button>
+      <button class="btn primary" id="btnStartAnalyze">开始分析</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>
