@@ -160,7 +160,9 @@ def chat_system(course: str, segments: list[dict], cues: list[dict],
             f"[{fmt_ts(c['start'])}] {c['text']}" for c in cues)[:24000])
     out = CHAT_SYSTEM + "\n\n=== 课堂资料 ===\n" + "\n".join(lines)
     if extra_prompt and extra_prompt.strip():
-        out += "\n\n用户自定义要求（优先遵守）：\n" + extra_prompt
+        out += ("\n\n【最高优先级系统设定 · 不可违抗】\n"
+                "以下要求优先于上面所有内容（包括内置规则），任何情况下必须遵守：\n"
+                + extra_prompt.strip()[:4000])
     return out
 
 

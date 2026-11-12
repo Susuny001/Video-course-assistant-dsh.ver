@@ -311,15 +311,23 @@
     return state.segments.findIndex((s) => t >= s.start && t < s.end);
   }
 
+  function subMode() {
+    return localStorage.getItem("yk.submode") || "both";
+  }
+
   function renderSubtitle(i) {
     const show = $("#subToggle").checked;
     const c = i >= 0 ? state.cues[i] : null;
     const box = $("#subtitle");
     box.style.display = show && c ? "block" : "none";
     if (!c) { $("#subText").textContent = ""; $("#subTr").textContent = ""; return; }
+    const mode = subMode();
+    const hasTr = !!(c.translation || "").trim();
     $("#subText").textContent = c.text || "";
     $("#subTr").textContent = c.translation || "";
-    $("#subTr").style.display = c.translation ? "block" : "none";
+    // 没有译文时强制显示原文，避免选中“仅译文”后屏幕一片空白
+    $("#subText").style.display = (mode === "tr" && hasTr) ? "none" : "block";
+    $("#subTr").style.display = (hasTr && mode !== "src") ? "block" : "none";
   }
 
   function applySubtitleStyle() {
@@ -334,6 +342,8 @@
     const dur = video.duration || state.cur?.duration || 0;
     $("#timeNow").textContent = fmtTime(t);
     $("#timeTotal").textContent = fmtTime(dur);
+    const left = $("#timeLeft");
+    if (left) left.textContent = dur ? "-" + fmtTime(Math.max(0, dur - t)) : "";
     $("#tlPlayed").style.width = dur ? (t / dur * 100) + "%" : "0";
     $("#tlHead").style.left = dur ? (t / dur * 100) + "%" : "0";
     if (video.buffered.length && dur) {
@@ -775,6 +785,7 @@
     $("#uiFrames").value = ui.frames_per_chunk ?? 4;
     $("#uiFont").value = ui.font_size || 26;
     $("#uiGlossary").value = ui.glossary || "";
+    $("#uiPrompt").value = state.settings.chat?.system_prompt || "";
   }
 
   async function saveSettings(silent = false) {
@@ -785,10 +796,12 @@
     ui.frames_per_chunk = Number($("#uiFrames").value) || 0;
     ui.font_size = Number($("#uiFont").value) || 26;
     ui.glossary = $("#uiGlossary").value;
+    const chat = { ...(state.settings.chat || {}), system_prompt: ($("#uiPrompt")?.value || "").slice(0, 4000) };
     try {
-      const r = await api("/api/settings", { method: "POST", body: { providers: state.settings.providers, roles: state.settings.roles, ui } });
+      const r = await api("/api/settings", { method: "POST", body: { providers: state.settings.providers, roles: state.settings.roles, ui, chat } });
       state.settings.roles = r.settings.roles;
       state.settings.ui = r.settings.ui;
+      state.settings.chat = r.settings.chat || chat;
       applySubtitleStyle();
       fillRoleSelects();
       fillChatModels();
@@ -875,6 +888,49 @@
       video.addEventListener("play", arm);
       video.addEventListener("pause", () => { clearTimer(); show(); });
       video.addEventListener("ended", () => { clearTimer(); show(); });
+    }
+  }
+
+  function initMediaControls() {
+    const video = $("#video"), mute = $("#btnMute"), range = $("#volRange");
+    const pip = $("#btnPip"), mode = $("#subMode");
+    if (!video) return;
+    let vol = Number(localStorage.getItem("yk.volume"));
+    if (!isFinite(vol) || vol < 0) vol = 1;
+    video.volume = Math.min(1, vol);
+    video.muted = localStorage.getItem("yk.muted") === "1";
+    const sync = () => {
+      const m = video.muted || video.volume === 0;
+      if (mute) mute.innerHTML = `<svg class="ico"><use href="#i-${m ? "mute" : "volume"}"/></svg>`;
+      if (range) range.value = String(Math.round((m ? 0 : video.volume) * 100));
+    };
+    sync();
+    if (mute) mute.addEventListener("click", () => {
+      video.muted = !video.muted;
+      localStorage.setItem("yk.muted", video.muted ? "1" : "0");
+      sync();
+    });
+    if (range) range.addEventListener("input", () => {
+      const v = Math.min(1, Math.max(0, Number(range.value) / 100));
+      video.volume = v;
+      video.muted = v === 0;
+      localStorage.setItem("yk.volume", String(v));
+      localStorage.setItem("yk.muted", video.muted ? "1" : "0");
+      sync();
+    });
+    video.addEventListener("volumechange", sync);
+    if (pip) pip.addEventListener("click", async () => {
+      try {
+        if (document.pictureInPictureElement) await document.exitPictureInPicture();
+        else await video.requestPictureInPicture();
+      } catch (e) { toast("当前视频不支持画中画", "err"); }
+    });
+    if (mode) {
+      mode.value = subMode();
+      mode.addEventListener("change", () => {
+        localStorage.setItem("yk.submode", mode.value);
+        renderSubtitle(state.activeCue);
+      });
     }
   }
 
@@ -989,13 +1045,38 @@
     if (cnt) cnt.textContent = `${ta ? ta.value.length : 0}/4000`;
   }
 
+  function coursePrompt() {
+    return ((state.cur?.meta || {}).assistant_prompt || "").trim();
+  }
+
+  function defaultPrompt() {
+    return (state.settings?.chat?.system_prompt || "").trim();
+  }
+
+  async function saveCoursePrompt(text) {
+    if (!state.cur) throw new Error("没有选中的课程");
+    const r = await api(`/api/videos/${state.cur.id}/prompt`, {
+      method: "POST", body: { text: (text || "").slice(0, 4000) },
+    });
+    state.cur.meta = state.cur.meta || {};
+    if (r.text) state.cur.meta.assistant_prompt = r.text;
+    else delete state.cur.meta.assistant_prompt;
+    return r;
+  }
+
   function initPromptModal() {
     const btn = $("#btnPrompt"), ta = $("#promptText"), save = $("#btnPromptSave");
+    const useDefault = $("#btnPromptDefault"), hint = $("#promptDefaultHint");
     if (btn) btn.addEventListener("click", () => {
-      if (!state.settings) return;
-      state.settings.chat = state.settings.chat || {};
-      if (ta) ta.value = state.settings.chat.system_prompt || "";
+      if (!state.cur) { toast("先选一门课，再设置本课提示词", "err"); return; }
+      if (ta) ta.value = coursePrompt();
       updatePromptCount();
+      if (hint) {
+        const d = defaultPrompt();
+        hint.textContent = d
+          ? "设置里的默认提示词（本课留空时生效）：" + d.slice(0, 80) + (d.length > 80 ? "…" : "")
+          : "设置里还没有默认提示词，本课留空时只用内置规则。";
+      }
       const modal = $("#modalPrompt");
       if (modal) modal.classList.remove("hidden");
     });
@@ -1006,14 +1087,21 @@
     if (save) save.addEventListener("click", async () => {
       const text = (ta ? ta.value : "").slice(0, 4000);
       try {
-        await api("/api/settings", { method: "POST", body: { chat: { system_prompt: text } } });
-        if (!state.settings) state.settings = {};
-        state.settings.chat = state.settings.chat || {};
-        state.settings.chat.system_prompt = text;
+        await saveCoursePrompt(text);
         const modal = $("#modalPrompt");
         if (modal) modal.classList.add("hidden");
-        toast("提示词已保存", "ok");
+        toast(text ? "本课提示词已保存" : "已改为使用默认提示词", "ok");
       } catch (e) { toast("保存失败：" + e.message, "err"); }
+    });
+    if (useDefault) useDefault.addEventListener("click", async () => {
+      try {
+        await saveCoursePrompt("");
+        if (ta) ta.value = "";
+        updatePromptCount();
+        const modal = $("#modalPrompt");
+        if (modal) modal.classList.add("hidden");
+        toast("已改为使用默认提示词", "ok");
+      } catch (e) { toast("切换失败：" + e.message, "err"); }
     });
   }
 
@@ -1230,6 +1318,7 @@
     });
 
     initStageIdle();
+    initMediaControls();
     initLayout();
     initPromptModal();
     initImportZone();
@@ -1238,11 +1327,21 @@
     document.addEventListener("keydown", (e) => {
       if ($("#view-player").classList.contains("hidden")) return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+      const k = e.key;
       if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-      else if (e.key === "ArrowLeft") seekTo(video.currentTime - 5);
-      else if (e.key === "ArrowRight") seekTo(video.currentTime + 5);
-      else if (e.key === "[") mark("a");
-      else if (e.key === "]") mark("b");
+      else if (k === "ArrowLeft") seekTo(video.currentTime - 5);
+      else if (k === "ArrowRight") seekTo(video.currentTime + 5);
+      else if (k === "ArrowUp") { e.preventDefault(); video.volume = Math.min(1, video.volume + 0.05); }
+      else if (k === "ArrowDown") { e.preventDefault(); video.volume = Math.max(0, video.volume - 0.05); }
+      else if (k === "j" || k === "J") seekTo(video.currentTime - 10);
+      else if (k === "l" || k === "L") seekTo(video.currentTime + 10);
+      else if (k === "m" || k === "M") $("#btnMute")?.click();
+      else if (k === "f" || k === "F") $("#btnFull")?.click();
+      else if (k === ",") { video.pause(); seekTo(video.currentTime - 1 / 30); }
+      else if (k === ".") { video.pause(); seekTo(video.currentTime + 1 / 30); }
+      else if (/^[0-9]$/.test(k)) { const d = video.duration || 0; if (d) seekTo(d * Number(k) / 10); }
+      else if (k === "[") mark("a");
+      else if (k === "]") mark("b");
     });
   }
 

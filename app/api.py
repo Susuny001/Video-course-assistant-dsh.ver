@@ -277,6 +277,20 @@ def set_subtitle(vid: str, body: dict = Body(...)):
     return {"ok": True, "subtitle_path": str(p)}
 
 
+@router.post("/videos/{vid}/prompt")
+def set_prompt(vid: str, body: dict = Body(default={})):
+    """设置本课单独的助教提示词；传空字符串表示恢复使用默认提示词。"""
+    v = _video_or_404(vid)
+    text = str((body or {}).get("text") or "").strip()[:4000]
+    meta = dict(v.get("meta") or {})
+    if text:
+        meta["assistant_prompt"] = text
+    else:
+        meta.pop("assistant_prompt", None)
+    db.update_video(vid, meta=meta)
+    return {"ok": True, "text": text, "using_default": not text}
+
+
 # ---------------------------------------------------------------- 分析任务
 @router.post("/videos/{vid}/analyze")
 async def analyze(vid: str, opts: dict = Body(default={})):
@@ -581,8 +595,10 @@ async def chat(body: dict = Body(...)):
     segs = db.get_segments(vid)
     cues = db.get_cues(vid)
     ctx_cues = cues if sel else _pick_context(text, cues)
-    # 自定义助教提示词：服务端再截断一次，防止前端绕过限制
-    extra_prompt = str((load_settings().get("chat") or {}).get("system_prompt") or "")[:4000]
+    # 助教提示词：本课单独设置的优先，没有就用设置里的默认；服务端再截断一次
+    course_prompt = str((v.get("meta") or {}).get("assistant_prompt") or "").strip()
+    default_prompt = str((load_settings().get("chat") or {}).get("system_prompt") or "").strip()
+    extra_prompt = (course_prompt or default_prompt)[:4000]
     system = prompts.chat_system(v["title"], segs, ctx_cues, sel,
                                  glossary=body.get("glossary") or "",
                                  extra_prompt=extra_prompt)

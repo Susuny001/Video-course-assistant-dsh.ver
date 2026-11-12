@@ -20,6 +20,9 @@
   <symbol id="i-close" viewBox="0 0 24 24"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></symbol>
   <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></symbol>
   <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3l5 5h-3v6h-4V8H7l5-5zM5 18h14v2H5z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9h3l4-4v14l-4-4H4V9zm10.5-1.5a5 5 0 0 1 0 9v-2a3 3 0 0 0 0-5v-2zm2-3a8 8 0 0 1 0 15v-2a6 6 0 0 0 0-11v-2z"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9h3l4-4v14l-4-4H4V9zm11.6-.6 1.4 1.4-1.6 1.7 1.6 1.7-1.4 1.4-1.7-1.6-1.7 1.6-1.4-1.4 1.6-1.7-1.6-1.7 1.4-1.4 1.7 1.6z"/></symbol>
+  <symbol id="i-pip" viewBox="0 0 24 24"><path d="M4 5h16v14H4V5zm2 2v10h12V7H6zm6 4h5v4h-5v-4z"/></symbol>
 </svg>
 
 <header class="topbar">
@@ -144,6 +147,10 @@
           <span class="time" id="timeNow">00:00</span>
           <span class="muted">/</span>
           <span class="time" id="timeTotal">00:00</span>
+          <span class="muted small" id="timeLeft"></span>
+          <button class="icon-btn sm" id="btnMute" title="静音（M）"><svg class="ico"><use href="#i-volume"/></svg></button>
+          <input class="vol-range" id="volRange" type="range" min="0" max="100" step="1" value="100" title="音量">
+          <button class="icon-btn sm" id="btnPip" title="画中画"><svg class="ico"><use href="#i-pip"/></svg></button>
           <span class="spacer"></span>
           <div class="selection-tools">
             <button class="chip" id="btnMarkA" title="标记选区起点（快捷键 [）">设 A</button>
@@ -155,6 +162,11 @@
           <label class="switch" title="显示 / 隐藏字幕">
             <input type="checkbox" id="subToggle" checked><span></span>字幕
           </label>
+          <select class="mini-select" id="subMode" title="字幕显示方式">
+            <option value="both">双语</option>
+            <option value="src">仅原文</option>
+            <option value="tr">仅译文</option>
+          </select>
           <input id="speedSel" class="mini-input speed-input" type="number" min="0.25" max="4" step="0.05" value="1" title="播放速度（0.25-4）">
           <label class="mini-label">字号<input id="fontInput" class="mini-input font-input" type="number" min="12" max="64" step="1" value="26"></label>
           <button class="icon-btn sm" id="btnFull"><svg class="ico"><use href="#i-full"/></svg></button>
@@ -269,6 +281,9 @@
           <label class="field"><span>常用术语表（可选）</span>
             <textarea id="uiGlossary" rows="3" placeholder="例如：剖视图=section view, 肋板=rib"></textarea>
           </label>
+          <label class="field full"><span>默认助教提示词 <span class="muted small">（没有单独设置的本课提示词时使用，最多 4000 字）</span></span>
+            <textarea id="uiPrompt" rows="4" maxlength="4000" placeholder="留空则只用内置规则。例如：回答先给结论，再给时间点；只依据字幕，不要编造。"></textarea>
+          </label>
         </div>
       </div>
     </div>
@@ -320,13 +335,20 @@
 <div class="modal hidden" id="modalPrompt">
   <div class="modal-card">
     <div class="modal-head">
-      <h3>助教提示词</h3>
+      <h3>本课助教提示词</h3>
       <button class="icon-btn" data-close="modalPrompt"><svg class="ico"><use href="#i-close"/></svg></button>
     </div>
     <div class="modal-body">
-      <p class="muted small">给助教追加的系统要求，最多 4000 字。留空则使用内置规则。</p>
+      <p class="muted small">只对当前这一门课生效，优先级最高。保存后覆盖临时对话里与它冲突的要求；留空则改用设置里的默认提示词。</p>
       <textarea id="promptText" rows="10" maxlength="4000" placeholder="例如：回答时先给结论，再给时间点；只依据字幕内容，不要编造。"></textarea>
-      <div class="row gap8" style="justify-content:flex-end"><span class="muted small" id="promptCount">0/4000</span><button class="btn primary sm" id="btnPromptSave">保存</button></div>
+      <div class="row gap8" style="justify-content:space-between;align-items:center">
+        <button class="btn ghost sm" id="btnPromptDefault" title="清空本课提示词，改用设置里的默认提示词">使用默认提示词</button>
+        <div class="row gap8" style="align-items:center">
+          <span class="muted small" id="promptCount">0/4000</span>
+          <button class="btn primary sm" id="btnPromptSave">保存</button>
+        </div>
+      </div>
+      <p class="muted small" id="promptDefaultHint"></p>
     </div>
   </div>
 </div>
