@@ -10,12 +10,12 @@ import time
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, Response,
                                StreamingResponse)
 
 from . import db, dialog, export, llm, media, pipeline, prompts, search
-from .config import VERSION, get_provider, load_settings, save_settings, video_dir
+from .config import VERSION, data_dir, get_provider, load_settings, save_settings, video_dir
 
 router = APIRouter(prefix="/api")
 _tasks: set[asyncio.Task] = set()
@@ -76,31 +76,143 @@ async def test_settings(body: dict = Body(...)):
 
 
 # ---------------------------------------------------------------- 导入
-@router.post("/import")
-async def import_videos(body: dict = Body(default={})):
-    paths = body.get("paths") or []
-    if not paths:
-        return {"ok": False, "message": "没有选择文件", "videos": []}
+async def _import_one(path: str) -> dict:
+    """探测并入库单个媒体文件，返回 {"ok": True, "video": ...}。"""
+    info = await asyncio.to_thread(media.probe, path)
+    title = Path(path).stem.replace("_", " ")
+    v = db.add_video(
+        path, title, duration=info["duration"], width=info["width"], height=info["height"],
+        size=info["size"], status="new",
+        meta={"format": info["format"], "vcodec": info["vcodec"], "acodec": info["acodec"],
+              "has_video": info["has_video"], "has_audio": info["has_audio"],
+              "media_kind": "video" if info["has_video"] else "audio"},
+    )
+    return {"ok": True, "video": v}
+
+
+async def _import_paths(paths: list[str]) -> list[dict]:
+    """批量入库本地路径，单个失败不影响其它文件。"""
     added = []
     for p in paths:
         p = str(p)
         if not Path(p).exists():
             continue
         try:
-            info = await asyncio.to_thread(media.probe, p)
+            added.append(await _import_one(p))
         except Exception as e:  # noqa: BLE001
             added.append({"ok": False, "path": p, "error": str(e)})
+    return added
+
+
+@router.post("/import")
+async def import_videos(body: dict = Body(default={})):
+    paths = body.get("paths") or []
+    if not paths:
+        return {"ok": False, "message": "没有选择文件", "videos": []}
+    return {"ok": True, "videos": await _import_paths(paths)}
+
+
+# 字幕常见语言后缀：xxx.en.srt / xxx.zh.srt / xxx.chs.srt 等
+SUB_LANG_SUFFIX = {
+    "en", "eng", "english", "zh", "chs", "cht", "chi", "cn", "chinese",
+    "ja", "jp", "ko", "kr", "fr", "de", "ru", "es", "auto",
+}
+
+
+def _safe_filename(name: str) -> str:
+    """只保留 basename，去掉路径分隔符和非法字符。"""
+    base = str(name or "").replace("\\", "/").split("/")[-1].strip()
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base).strip(" .")
+    return (base or "file")[:160]
+
+
+def _unique_path(directory: Path, name: str) -> Path:
+    """重名时加 _1/_2 后缀，不覆盖已有文件。"""
+    p = directory / name
+    if not p.exists():
+        return p
+    stem, suffix = Path(name).stem, Path(name).suffix
+    i = 1
+    while True:
+        q = directory / f"{stem}_{i}{suffix}"
+        if not q.exists():
+            return q
+        i += 1
+
+
+def _stem_without_lang(stem: str) -> str:
+    """去掉 .en/.zh/.chs 这类语言后缀后的主名，用于和视频文件名配对。"""
+    s = stem
+    while True:
+        head, sep, tail = s.rpartition(".")
+        if sep and tail.lower() in SUB_LANG_SUFFIX:
+            s = head
+        else:
+            return s
+
+
+def _match_subtitle(video_stem: str, subs: list[dict]) -> str:
+    """按文件名给视频挑字幕，完全同名优先，其次是带语言后缀的同名字幕。"""
+    v = video_stem.lower()
+    best = ""
+    for s in subs:
+        if s["base"].lower() != v:
             continue
-        title = Path(p).stem.replace("_", " ")
-        v = db.add_video(
-            p, title, duration=info["duration"], width=info["width"], height=info["height"],
-            size=info["size"], status="new",
-            meta={"format": info["format"], "vcodec": info["vcodec"], "acodec": info["acodec"],
-                  "has_video": info["has_video"], "has_audio": info["has_audio"],
-                  "media_kind": "video" if info["has_video"] else "audio"},
-        )
-        added.append({"ok": True, "video": v})
-    return {"ok": True, "videos": added}
+        if s["stem"].lower() == v:
+            return s["path"]
+        if not best:
+            best = s["path"]
+    return best
+
+
+@router.post("/import/upload")
+async def import_upload(files: list[UploadFile] = File(...)):
+    """接收前端拖拽上传的多个文件：媒体入库，.srt 单独保存并按文件名配对。"""
+    up_dir = data_dir() / "uploads"
+    up_dir.mkdir(parents=True, exist_ok=True)
+    save_errors: list[dict] = []
+    media_paths: list[str] = []
+    subs: list[dict] = []
+    for f in files:
+        name = _safe_filename(f.filename or "")
+        try:
+            dest = _unique_path(up_dir, name)
+            with dest.open("wb") as out:
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            save_errors.append({"ok": False, "name": name, "error": str(e)})
+            continue
+        finally:
+            await f.close()
+        if dest.suffix.lower() == ".srt":
+            subs.append({"path": str(dest), "stem": dest.stem,
+                         "base": _stem_without_lang(dest.stem)})
+        else:
+            media_paths.append(str(dest))
+
+    videos: list[dict] = []
+    for p in media_paths:
+        name = Path(p).name
+        try:
+            item = await _import_one(p)
+        except Exception as e:  # noqa: BLE001
+            videos.append({"ok": False, "name": name, "error": str(e)})
+            continue
+        sub = _match_subtitle(Path(p).stem, subs)
+        if sub:
+            v = item["video"]
+            meta = dict(v.get("meta") or {})
+            meta["subtitle_path"] = sub
+            db.update_video(v["id"], meta=meta)
+            v["meta"] = meta
+        item["subtitle_path"] = sub
+        videos.append(item)
+    return {"ok": True, "videos": save_errors + videos,
+            "subtitles": [s["path"] for s in subs]}
 
 
 @router.post("/import/dialog")
@@ -145,6 +257,24 @@ def save_position(vid: str, body: dict = Body(...)):
     meta["position"] = float(body.get("position") or 0)
     db.update_video(vid, meta=meta)
     return {"ok": True}
+
+
+@router.post("/videos/{vid}/subtitle")
+def set_subtitle(vid: str, body: dict = Body(...)):
+    """手动给课程挂 .srt 字幕。"""
+    v = _video_or_404(vid)
+    path = str((body or {}).get("path") or "").strip()
+    if not path:
+        raise HTTPException(400, "请提供字幕文件路径")
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(404, "字幕文件不存在")
+    if p.suffix.lower() != ".srt":
+        raise HTTPException(400, "只支持 .srt 字幕文件")
+    meta = dict(v.get("meta") or {})
+    meta["subtitle_path"] = str(p)
+    db.update_video(vid, meta=meta)
+    return {"ok": True, "subtitle_path": str(p)}
 
 
 # ---------------------------------------------------------------- 分析任务
@@ -451,8 +581,11 @@ async def chat(body: dict = Body(...)):
     segs = db.get_segments(vid)
     cues = db.get_cues(vid)
     ctx_cues = cues if sel else _pick_context(text, cues)
+    # 自定义助教提示词：服务端再截断一次，防止前端绕过限制
+    extra_prompt = str((load_settings().get("chat") or {}).get("system_prompt") or "")[:4000]
     system = prompts.chat_system(v["title"], segs, ctx_cues, sel,
-                                 glossary=body.get("glossary") or "")
+                                 glossary=body.get("glossary") or "",
+                                 extra_prompt=extra_prompt)
     history = db.get_messages(cid)[-12:]
     msgs = [{"role": "system", "content": system}]
     for m in history:

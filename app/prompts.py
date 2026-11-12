@@ -143,7 +143,8 @@ CHAT_SYSTEM = """你是这门课的私人助教，基于提供的课堂字幕、
 
 
 def chat_system(course: str, segments: list[dict], cues: list[dict],
-                selection: dict | None, glossary: str = "") -> str:
+                selection: dict | None, glossary: str = "",
+                extra_prompt: str = "") -> str:
     lines = [f"课程：{course}"]
     if glossary:
         lines.append(f"术语表：{glossary[:1500]}")
@@ -157,7 +158,10 @@ def chat_system(course: str, segments: list[dict], cues: list[dict],
     elif cues:
         lines.append("\n全课字幕（可能较长，按需引用）：\n" + "\n".join(
             f"[{fmt_ts(c['start'])}] {c['text']}" for c in cues)[:24000])
-    return CHAT_SYSTEM + "\n\n=== 课堂资料 ===\n" + "\n".join(lines)
+    out = CHAT_SYSTEM + "\n\n=== 课堂资料 ===\n" + "\n".join(lines)
+    if extra_prompt and extra_prompt.strip():
+        out += "\n\n用户自定义要求（优先遵守）：\n" + extra_prompt
+    return out
 
 
 KEYWORD_SYSTEM = """你是检索助手。用户给出关键词，以及若干条带编号的课堂字幕片段。请挑出与关键词真正相关的片段。

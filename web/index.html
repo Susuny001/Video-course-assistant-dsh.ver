@@ -53,6 +53,16 @@
     <h2>我的课程</h2>
     <span id="libCount" class="muted"></span>
   </div>
+  <div id="dropZone" class="drop-zone">
+    <div class="dz-title">把视频、录音或 SRT 拖到这里</div>
+    <div class="dz-sub muted">支持 mp4 / mkv / mov / webm / mp3 / m4a / wav / srt；课程自带字幕会自动配对</div>
+    <div class="row gap8" style="justify-content:center">
+      <button class="btn primary sm" id="btnPickMedia">选择视频 / 录音</button>
+      <button class="btn ghost sm" id="btnPickSubLib">选择字幕 SRT</button>
+    </div>
+    <div class="dz-hint muted small" id="subHint"></div>
+  </div>
+  <input type="file" id="fileInput" multiple accept="video/*,audio/*,.srt" class="hidden">
   <div id="libGrid" class="grid"></div>
   <div id="libEmpty" class="empty hidden">
     <div class="empty-ico">◒</div>
@@ -87,17 +97,20 @@
     </div>
   </div>
 
-  <div class="player-layout">
-    <aside class="segments-pane">
+  <div class="workspace">
+    <aside class="pane-left">
       <div class="pane-head">
-        <span>课程分段</span>
+        <h3>课程分段</h3>
         <span class="muted" id="segCount"></span>
+        <button class="icon-btn xs" id="btnCollapseLeft" title="收起/展开课程列表">‹</button>
       </div>
       <div id="segList" class="seg-list"></div>
       <div class="pane-foot">
         <button class="btn ghost sm block" id="btnKeywordsJump">按关键词找重点</button>
       </div>
     </aside>
+
+    <div class="resizer" id="rsLeft"></div>
 
     <section class="stage">
       <div class="video-wrap" id="videoWrap">
@@ -142,13 +155,8 @@
           <label class="switch" title="显示 / 隐藏字幕">
             <input type="checkbox" id="subToggle" checked><span></span>字幕
           </label>
-          <select class="mini-select" id="speedSel" title="播放速度">
-            <option value="0.75">0.75x</option>
-            <option value="1" selected>1.0x</option>
-            <option value="1.25">1.25x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2">2.0x</option>
-          </select>
+          <input id="speedSel" class="mini-input speed-input" type="number" min="0.25" max="4" step="0.05" value="1" title="播放速度（0.25-4）">
+          <label class="mini-label">字号<input id="fontInput" class="mini-input font-input" type="number" min="12" max="64" step="1" value="26"></label>
           <button class="icon-btn sm" id="btnFull"><svg class="ico"><use href="#i-full"/></svg></button>
         </div>
       </div>
@@ -165,11 +173,14 @@
       </div>
     </section>
 
+    <div class="resizer" id="rsRight"></div>
+
     <aside class="side-pane">
       <div class="tabs">
         <button class="tab active" data-tab="summary">摘要</button>
         <button class="tab" data-tab="chat">问答</button>
         <button class="tab" data-tab="keywords">重点</button>
+        <button class="icon-btn xs" id="btnCollapseRight" title="收起/展开侧栏">›</button>
       </div>
 
       <div class="tab-body" id="tab-summary">
@@ -187,6 +198,7 @@
             <input type="checkbox" id="frameToggle" checked><span></span>看画面
           </label>
           <button class="chip" id="btnNewChat" title="开始新对话">新对话</button>
+          <button class="icon-btn xs prompt-btn" id="btnPrompt" title="自定义助教提示词">?</button>
         </div>
         <div class="chat-context hidden" id="chatContext">
           <span id="chatContextText">未选择片段</span>
@@ -301,6 +313,20 @@
     <div class="modal-foot">
       <button class="btn ghost" data-close="modalAnalyze">取消</button>
       <button class="btn primary" id="btnStartAnalyze">开始分析</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="modalPrompt">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>助教提示词</h3>
+      <button class="icon-btn" data-close="modalPrompt"><svg class="ico"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p class="muted small">给助教追加的系统要求，最多 4000 字。留空则使用内置规则。</p>
+      <textarea id="promptText" rows="10" maxlength="4000" placeholder="例如：回答时先给结论，再给时间点；只依据字幕内容，不要编造。"></textarea>
+      <div class="row gap8" style="justify-content:flex-end"><span class="muted small" id="promptCount">0/4000</span><button class="btn primary sm" id="btnPromptSave">保存</button></div>
     </div>
   </div>
 </div>

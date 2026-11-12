@@ -817,6 +817,281 @@
     } catch (e) { toast("导入失败：" + e.message, "err"); }
   }
 
+  /* ------------------------------------------------ 播放器增强 */
+  function initSpeedInput() {
+    const el = $("#speedSel");
+    if (!el) return;
+    const apply = () => {
+      let v = parseFloat(el.value);
+      if (!isFinite(v)) v = 1;
+      v = Math.min(4, Math.max(0.25, v));
+      v = Math.round(v * 100) / 100;
+      el.value = String(v);
+      const video = $("#video");
+      if (video) video.playbackRate = v;
+    };
+    el.addEventListener("change", apply);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); apply(); }
+    });
+  }
+
+  function initFontInput() {
+    const el = $("#fontInput");
+    if (!el) return;
+    el.value = String(Number(state.settings?.ui?.font_size || 26));
+    el.addEventListener("input", () => {
+      const v = Math.min(64, Math.max(12, Number(el.value) || 26));
+      if (!state.settings) return;
+      state.settings.ui = state.settings.ui || {};
+      state.settings.ui.font_size = v;
+      applySubtitleStyle();
+    });
+    el.addEventListener("change", async () => {
+      const v = Math.min(64, Math.max(12, Number(el.value) || 26));
+      el.value = String(v);
+      if (state.settings?.ui) state.settings.ui.font_size = v;
+      try {
+        await api("/api/settings", { method: "POST", body: { ui: { font_size: v } } });
+      } catch (e) { toast("字号保存失败：" + e.message, "err"); }
+    });
+  }
+
+  function initStageIdle() {
+    const stage = document.querySelector(".stage");
+    const video = $("#video");
+    if (!stage) return;
+    let timer = null;
+    const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    const show = () => stage.classList.remove("idle");
+    const arm = () => {
+      clearTimer();
+      if (video && !video.paused && !video.ended) timer = setTimeout(() => stage.classList.add("idle"), 2500);
+    };
+    const wake = () => { show(); arm(); };
+    stage.addEventListener("mousemove", wake);
+    stage.addEventListener("mouseenter", wake);
+    if (video) {
+      video.addEventListener("play", arm);
+      video.addEventListener("pause", () => { clearTimer(); show(); });
+      video.addEventListener("ended", () => { clearTimer(); show(); });
+    }
+  }
+
+  function initVideoClicks() {
+    const wrap = $("#videoWrap");
+    if (!wrap) return;
+    let clickTimer = null;
+    wrap.addEventListener("click", (e) => {
+      if (e.target.closest(".controls") || e.target.closest("button")) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
+      clickTimer = setTimeout(() => { clickTimer = null; togglePlay(); }, 220);
+    });
+    wrap.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".controls") || e.target.closest("button")) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      if (document.fullscreenElement) document.exitFullscreen();
+      else wrap.requestFullscreen?.();
+    });
+  }
+
+  /* ------------------------------------------------ 布局 */
+  const LAYOUT_KEY = "yk.layout";
+  const layout = { left: null, right: null, leftCollapsed: false, rightCollapsed: false };
+  const getWorkspace = () => document.querySelector(".workspace") || document.querySelector(".player-layout");
+  const clampSize = (v, min, max) => Math.min(max, Math.max(min, Math.round(Number(v) || min)));
+
+  function saveLayout() {
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) {}
+  }
+
+  function applyPaneWidth(side) {
+    const ws = getWorkspace();
+    if (!ws) return;
+    const key = side === "left" ? "--left-w" : "--right-w";
+    const pane = $(side === "left" ? ".pane-left" : ".side-pane");
+    const collapsed = side === "left" ? layout.leftCollapsed : layout.rightCollapsed;
+    if (collapsed) { ws.style.setProperty(key, "44px"); return; }
+    if (pane) pane.classList.remove("collapsed");
+    if (layout[side]) ws.style.setProperty(key, layout[side] + "px");
+    else ws.style.removeProperty(key);
+  }
+
+  function updateCollapseArrows() {
+    const set = (btn, txt) => {
+      if (!btn) return;
+      const arrow = btn.querySelector(".arrow, [data-arrow]");
+      if (arrow) arrow.textContent = txt;
+      else if (!btn.querySelector("svg")) btn.textContent = txt;
+    };
+    set($("#btnCollapseLeft"), layout.leftCollapsed ? "›" : "‹");
+    set($("#btnCollapseRight"), layout.rightCollapsed ? "‹" : "›");
+  }
+
+  function setCollapsed(side, on) {
+    if (side === "left") layout.leftCollapsed = !!on;
+    else layout.rightCollapsed = !!on;
+    const pane = $(side === "left" ? ".pane-left" : ".side-pane");
+    if (pane) pane.classList.toggle("collapsed", !!on);
+    applyPaneWidth(side);
+    updateCollapseArrows();
+    saveLayout();
+  }
+
+  function initLayout() {
+    try {
+      const d = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") || {};
+      if (d.left != null && isFinite(Number(d.left))) layout.left = clampSize(d.left, 160, 480);
+      if (d.right != null && isFinite(Number(d.right))) layout.right = clampSize(d.right, 220, 520);
+      layout.leftCollapsed = !!d.leftCollapsed;
+      layout.rightCollapsed = !!d.rightCollapsed;
+    } catch (e) {}
+    applyPaneWidth("left");
+    applyPaneWidth("right");
+    updateCollapseArrows();
+
+    const bindDrag = (handle, side) => {
+      if (!handle) return;
+      handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        if (side === "left" && layout.leftCollapsed) return;
+        if (side === "right" && layout.rightCollapsed) return;
+        const pane = $(side === "left" ? ".pane-left" : ".side-pane");
+        const startX = e.clientX;
+        const startW = pane ? pane.getBoundingClientRect().width : (layout[side] || (side === "left" ? 280 : 340));
+        const move = (ev) => {
+          const delta = side === "left" ? ev.clientX - startX : startX - ev.clientX;
+          const w = side === "left" ? clampSize(startW + delta, 160, 480) : clampSize(startW + delta, 220, 520);
+          layout[side] = w;
+          const ws = getWorkspace();
+          if (ws) ws.style.setProperty(side === "left" ? "--left-w" : "--right-w", w + "px");
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          saveLayout();
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      });
+    };
+    bindDrag($("#rsLeft"), "left");
+    bindDrag($("#rsRight"), "right");
+
+    const cl = $("#btnCollapseLeft"), cr = $("#btnCollapseRight");
+    if (cl) cl.addEventListener("click", () => setCollapsed("left", !layout.leftCollapsed));
+    if (cr) cr.addEventListener("click", () => setCollapsed("right", !layout.rightCollapsed));
+  }
+
+  /* ------------------------------------------------ 助教提示词 */
+  function updatePromptCount() {
+    const ta = $("#promptText"), cnt = $("#promptCount");
+    if (cnt) cnt.textContent = `${ta ? ta.value.length : 0}/4000`;
+  }
+
+  function initPromptModal() {
+    const btn = $("#btnPrompt"), ta = $("#promptText"), save = $("#btnPromptSave");
+    if (btn) btn.addEventListener("click", () => {
+      if (!state.settings) return;
+      state.settings.chat = state.settings.chat || {};
+      if (ta) ta.value = state.settings.chat.system_prompt || "";
+      updatePromptCount();
+      const modal = $("#modalPrompt");
+      if (modal) modal.classList.remove("hidden");
+    });
+    if (ta) ta.addEventListener("input", () => {
+      if (ta.value.length > 4000) ta.value = ta.value.slice(0, 4000);
+      updatePromptCount();
+    });
+    if (save) save.addEventListener("click", async () => {
+      const text = (ta ? ta.value : "").slice(0, 4000);
+      try {
+        await api("/api/settings", { method: "POST", body: { chat: { system_prompt: text } } });
+        if (!state.settings) state.settings = {};
+        state.settings.chat = state.settings.chat || {};
+        state.settings.chat.system_prompt = text;
+        const modal = $("#modalPrompt");
+        if (modal) modal.classList.add("hidden");
+        toast("提示词已保存", "ok");
+      } catch (e) { toast("保存失败：" + e.message, "err"); }
+    });
+  }
+
+  /* ------------------------------------------------ 导入上传 */
+  async function uploadFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const hint = $("#subHint");
+    const fd = new FormData();
+    files.forEach((f) => fd.append("files", f));
+    if (hint) hint.textContent = `正在导入 ${files.length} 个文件…`;
+    try {
+      const resp = await fetch("/api/import/upload", { method: "POST", body: fd });
+      if (!resp.ok) {
+        let msg = resp.statusText;
+        try { const j = await resp.json(); msg = j.detail || j.message || msg; } catch (e) {}
+        throw new Error(msg);
+      }
+      const r = await resp.json();
+      const vids = r.videos || [];
+      const subs = r.subtitles || [];
+      const okCount = vids.filter((v) => v.ok).length;
+      const fails = vids.filter((v) => !v.ok).map((v) => v.name || "未命名文件");
+      const paired = vids.concat(subs).some((v) => v.subtitle_path);
+      if (okCount) toast(`已导入 ${okCount} 个文件`, "ok");
+      if (paired) toast("已自动配对字幕", "ok");
+      if (fails.length) toast("导入失败：" + fails.join("、"), "err");
+      if (!vids.length && !subs.length) toast("没有导入文件", "err");
+      await loadVideos();
+    } catch (e) {
+      toast("导入失败：" + e.message, "err");
+    } finally {
+      if (hint) hint.textContent = "";
+    }
+  }
+
+  function initImportZone() {
+    const zone = $("#dropZone");
+    if (zone) {
+      const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+      zone.addEventListener("dragenter", (e) => { stop(e); zone.classList.add("drag"); });
+      zone.addEventListener("dragover", (e) => { stop(e); zone.classList.add("drag"); });
+      zone.addEventListener("dragleave", (e) => { stop(e); zone.classList.remove("drag"); });
+      zone.addEventListener("drop", (e) => {
+        stop(e);
+        zone.classList.remove("drag");
+        const files = e.dataTransfer?.files;
+        if (files && files.length) uploadFiles(files);
+      });
+      zone.addEventListener("click", (e) => {
+        if (e.target.closest("button, input, label, a, textarea, select")) return;
+        importViaDialog();
+      });
+    }
+    const pickMedia = $("#btnPickMedia");
+    if (pickMedia) pickMedia.addEventListener("click", importViaDialog);
+    const pickSub = $("#btnPickSubLib");
+    if (pickSub) pickSub.addEventListener("click", async () => {
+      if (!state.cur) { toast("先在左侧选择一门课，再挂字幕", "err"); return; }
+      try {
+        const r = await api("/api/import/dialog", { method: "POST", body: { kind: "subtitle" } });
+        const path = r.paths?.[0];
+        if (!path) return;
+        await api(`/api/videos/${state.cur.id}/subtitle`, { method: "POST", body: { path } });
+        state.cur.meta = state.cur.meta || {};
+        state.cur.meta.subtitle_path = path;
+        const hint = $("#subHint");
+        if (hint) hint.textContent = "字幕已挂到：" + state.cur.title;
+        toast("字幕已挂到当前课程", "ok");
+      } catch (e) { toast("选择字幕失败：" + e.message, "err"); }
+    });
+    const fileInput = $("#fileInput");
+    if (fileInput) fileInput.addEventListener("change", () => {
+      uploadFiles(fileInput.files);
+      fileInput.value = "";
+    });
+  }
+
   /* ------------------------------------------------ 事件绑定 */
   function bind() {
     const video = $("#video");
@@ -832,16 +1107,12 @@
       $("#btnPlay").innerHTML = '<svg class="ico"><use href="#i-play"/></svg>';
       flashPlay(false);
     });
-    video.addEventListener("click", (e) => e.stopPropagation());
-    $("#videoWrap").addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
-      togglePlay();
-    });
+    initVideoClicks();
 
     $("#btnPlay").addEventListener("click", togglePlay);
     $("#btnBack10").addEventListener("click", () => seekTo(video.currentTime - 10));
     $("#btnFwd10").addEventListener("click", () => seekTo(video.currentTime + 10));
-    $("#speedSel").addEventListener("change", () => { video.playbackRate = parseFloat($("#speedSel").value); });
+    initSpeedInput();
     $("#subToggle").addEventListener("change", () => renderSubtitle(state.activeCue));
     $("#btnFull").addEventListener("click", () => {
       const w = $("#videoWrap");
@@ -881,8 +1152,16 @@
     $("#btnReanalyze").addEventListener("click", openAnalyze);
     $("#btnStartAnalyze").addEventListener("click", startAnalyze);
     $("#btnPickSub").addEventListener("click", async () => {
-      const r = await api("/api/import/dialog", { method: "POST", body: { kind: "subtitle" } });
-      if (r.paths?.[0]) $("#anSub").value = r.paths[0];
+      try {
+        const r = await api("/api/import/dialog", { method: "POST", body: { kind: "subtitle" } });
+        const path = r.paths?.[0];
+        if (!path) return;
+        if (!state.cur) { toast("请先选择课程", "err"); return; }
+        await api(`/api/videos/${state.cur.id}/subtitle`, { method: "POST", body: { path } });
+        const anSub = $("#anSub");
+        if (anSub) anSub.value = path;
+        toast("字幕已挂到当前课程", "ok");
+      } catch (e) { toast("选择字幕失败：" + e.message, "err"); }
     });
     $("#btnExportMenu").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -950,6 +1229,10 @@
       $("#chatInput").focus();
     });
 
+    initStageIdle();
+    initLayout();
+    initPromptModal();
+    initImportZone();
     initTimeline();
 
     document.addEventListener("keydown", (e) => {
@@ -980,6 +1263,7 @@
         ? `v${s.version} · 本地运行 · 数据只保存在本机`
         : "未检测到 ffmpeg，请先运行 setup.bat 安装";
       fillChatModels();
+      initFontInput();
       applySubtitleStyle();
     } catch (e) {
       toast("无法连接本地服务：" + e.message, "err");

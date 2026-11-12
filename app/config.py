@@ -236,7 +236,7 @@ def default_settings() -> dict:
             "font_size": 26,
             "auto_scroll": True,
         },
-        "chat": {"think": True, "temperature": 0.4},
+        "chat": {"think": True, "temperature": 0.4, "system_prompt": ""},
         "last_opened": "",
     }
 
@@ -276,6 +276,10 @@ def save_settings(patch: dict) -> dict:
     with _lock:
         cur = load_settings()
         merged = _deep_merge(cur, patch or {})
+        # 自定义助教提示词服务端兜底：最多 4000 字，防止前端绕过
+        chat = merged.get("chat")
+        if isinstance(chat, dict):
+            chat["system_prompt"] = str(chat.get("system_prompt") or "")[:4000]
         _config_path().write_text(json.dumps(merged, ensure_ascii=False, indent=2), "utf-8")
         _settings_cache = merged
         return merged
