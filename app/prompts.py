@@ -11,10 +11,10 @@ def lang_name(code: str) -> str:
     return LANG_NAMES.get(code or "", code or "")
 
 
-REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家。用户会给你一段课堂录音的机器转写（可能有同音字、术语、人名、数字错误），以及同一时间段的课堂画面截图和一份参考文稿片段。
+REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家。用户会给你一段课堂录音的机器转写（可能有同音字、术语、人名、数字错误），以及同一时间段的课堂画面截图。
 
 你的任务：
-1. 结合画面（PPT/板书/软件界面/图纸）和参考文稿，修正转写中的错别字、同音词、专业术语、数字、英文缩写、人名。参考文稿是最可靠的依据，画面是第二依据，上下文语义是第三依据。
+1. 结合画面（PPT/板书/软件界面/图纸）和上下文，修正转写中的错别字、同音词、专业术语、数字、英文缩写、人名。画面是最可靠的依据，上下文语义是第二依据。
 2. 绝对不能凭空编造课堂没有讲的内容；实在无法确定的地方保留原样，不要瞎猜。
 3. 去掉“啊、呃、就是说、对吧”这类纯口癖和重复，但保留老师的语气和完整语义。
 4. 合理断句，每句 8~45 个汉字为宜，不要把一句话拆得太碎。
@@ -30,7 +30,7 @@ REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家�
 - cues 必须与输入的 i 一一对应，数量不能变；translation 在不需要翻译时为空字符串。"""
 
 
-def refine_messages(cues: list[dict], *, reference: str = "", glossary: str = "",
+def refine_messages(cues: list[dict], *, glossary: str = "",
                     term_policy: str = "keep_en", translation_lang: str = "en",
                     context_before: str = "", context_after: str = "",
                     frames: list[str] | None = None,
@@ -41,7 +41,6 @@ def refine_messages(cues: list[dict], *, reference: str = "", glossary: str = ""
         "是否需要翻译": bool(translation_lang and translation_lang != "none"),
         "译文语言": lang_name(translation_lang) if translation_lang != "none" else "",
         "用户术语表": glossary,
-        "参考文稿片段（可能有少量错别字）": reference[-6000:],
         "上一段结尾": context_before[-300:],
         "下一段开头": context_after[-300:],
         "待校对转写": [{"i": i, "t": round(c["start"], 1), "raw": c.get("raw") or c.get("text", "")}
@@ -72,6 +71,31 @@ def translate_messages(cues: list[dict], target: str, glossary: str = "") -> lis
     }
     return [
         {"role": "system", "content": TRANSLATE_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+SEGMENT_PLAN_SYSTEM = """你是课程内容编辑，负责按教学内容给一节网课分段。输入是一个字幕窗口，每句带全局编号 i 和时间。
+
+判断窗口内是否出现新的教学主题：新章节、新方法、新题型、新例题、明显的话题转换。
+- 窗口开头延续上一窗口主题时，new_topic_start 为 null。
+- 窗口内出现新主题时，new_topic_start 填新主题第一句的全局编号，title 填 6~16 字标题。
+- 举例、重复、插话、点名、通知作业都不算新主题；一道例题内部不要切开。
+- 宁可少切，不要把一个完整知识点切碎。
+
+只输出 JSON：{"new_topic_start": 123, "title": "..."} 或 {"new_topic_start": null}。"""
+
+
+def segment_plan_messages(part: list[dict], prev_tail: str, course: str) -> list[dict]:
+    import json
+    payload = {
+        "课程": course,
+        "上一窗口结尾": prev_tail[-300:],
+        "字幕窗口": [{"i": c["i"], "t": fmt_ts(c["start"]), "text": c["text"][:140]}
+                 for c in part],
+    }
+    return [
+        {"role": "system", "content": SEGMENT_PLAN_SYSTEM},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
 

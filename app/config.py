@@ -155,7 +155,6 @@ def default_settings() -> dict:
             "subtitle_lang": "zh",
             "translation_lang": "en",
             "term_policy": "keep_en",
-            "segment_minutes": 8,
             "frames_per_chunk": 4,
             "asr_chunk_seconds": 300,
             "third_lang": "",

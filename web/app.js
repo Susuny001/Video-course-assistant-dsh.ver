@@ -171,7 +171,8 @@
       wrap.style.background = "#000";
     }
     video.src = `/api/videos/${v.id}/media`;
-    video.poster = `/api/videos/${v.id}/cover`;
+    if (v.cover) video.poster = `/api/videos/${v.id}/cover`;
+    else video.removeAttribute("poster");
     video.playbackRate = parseFloat($("#speedSel").value) || 1;
     video.onerror = onPlaybackError;
     video.load();
@@ -608,10 +609,6 @@
   function openAnalyze() {
     if (!state.cur) return;
     const ui = state.settings.ui;
-    const meta = state.cur.meta || {};
-    $("#anRef").value = meta.reference_path || "";
-    $("#anSegMin").value = ui.segment_minutes || 8;
-    $("#anFrames").value = ui.frames_per_chunk ?? 4;
     $("#anTrLang").value = ui.translation_lang || "en";
     $("#anTerm").value = ui.term_policy || "keep_en";
     $("#anSkip").checked = false;
@@ -621,7 +618,7 @@
       `语音识别：${esc(pname(roles.asr.provider))} / ${esc(roles.asr.model)}`,
       `画面纠错：${esc(pname(roles.refine.provider))} / ${esc(roles.refine.model)}`,
       `分段摘要：${esc(pname(roles.text.provider))} / ${esc(roles.text.model)}`,
-      `<span class="muted">想换模型去「设置」。没填 API Key 无法分析。</span>`,
+      `<span class="muted">分段由文本模型按教学内容自动判断。想换模型去「设置」。</span>`,
     ].join("<br>");
     $("#anProgress").classList.add("hidden");
     $("#btnStartAnalyze").disabled = false;
@@ -633,9 +630,6 @@
     const btn = $("#btnStartAnalyze");
     btn.disabled = true;
     const body = {
-      reference_path: $("#anRef").value.trim(),
-      segment_minutes: Number($("#anSegMin").value) || 8,
-      frames_per_chunk: Number($("#anFrames").value),
       translation_lang: $("#anTrLang").value,
       term_policy: $("#anTerm").value,
       skip_refine: $("#anSkip").checked,
@@ -775,7 +769,6 @@
     $("#uiSubLang").value = ui.subtitle_lang || "zh";
     $("#uiTrLang").value = ui.translation_lang || "en";
     $("#uiTerm").value = ui.term_policy || "keep_en";
-    $("#uiSegMin").value = ui.segment_minutes || 8;
     $("#uiFrames").value = ui.frames_per_chunk ?? 4;
     $("#uiFont").value = ui.font_size || 26;
     $("#uiGlossary").value = ui.glossary || "";
@@ -786,7 +779,6 @@
     ui.subtitle_lang = $("#uiSubLang").value;
     ui.translation_lang = $("#uiTrLang").value;
     ui.term_policy = $("#uiTerm").value;
-    ui.segment_minutes = Number($("#uiSegMin").value) || 8;
     ui.frames_per_chunk = Number($("#uiFrames").value) || 0;
     ui.font_size = Number($("#uiFont").value) || 26;
     ui.glossary = $("#uiGlossary").value;
@@ -885,10 +877,6 @@
     $("#brandHome").addEventListener("click", () => $("#btnBack").click());
     $("#btnReanalyze").addEventListener("click", openAnalyze);
     $("#btnStartAnalyze").addEventListener("click", startAnalyze);
-    $("#btnPickRef").addEventListener("click", async () => {
-      const r = await api("/api/import/dialog", { method: "POST", body: { kind: "text" } });
-      if (r.paths?.[0]) $("#anRef").value = r.paths[0];
-    });
     $("#btnExportMenu").addEventListener("click", (e) => {
       e.stopPropagation();
       $("#exportMenu").classList.toggle("open");

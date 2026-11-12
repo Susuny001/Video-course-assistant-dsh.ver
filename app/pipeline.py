@@ -9,7 +9,6 @@ from pathlib import Path
 
 from . import asr, db, export, llm, media, prompts
 from .config import get_provider, load_settings, resolve_role, video_dir
-from .refdoc import best_excerpt, load_text
 
 CANCELED = "canceled"
 
@@ -63,6 +62,81 @@ def _group_segments(cues: list[dict], target: float = 480.0, max_len: float = 90
             cur.append(c)
     segs.append({"start": cur[0]["start"], "end": cur[-1]["end"], "cues": cur})
     return segs
+
+
+def _slice_by_cuts(cues: list[dict], cuts: list[int]) -> list[dict]:
+    """按字幕序号切段，过短的并入前一段，过长的在中间分开。"""
+    out: list[dict] = []
+    for a, b in zip(cuts, cuts[1:]):
+        if b <= a:
+            continue
+        part = cues[a:b]
+        dur = part[-1]["end"] - part[0]["start"]
+        if out and dur < 90:
+            prev = out[-1]
+            prev["cues"].extend(part)
+            prev["end"] = prev["cues"][-1]["end"]
+            continue
+        out.append({"start": part[0]["start"], "end": part[-1]["end"], "cues": part})
+    # 单个主题讲太久时，从中间找最大的句间停顿再分一次
+    final: list[dict] = []
+    for seg in out:
+        while seg["end"] - seg["start"] > 1800 and len(seg["cues"]) > 8:
+            cs = seg["cues"]
+            mid = seg["start"] + (seg["end"] - seg["start"]) / 2
+            best_i, best_gap = len(cs) // 2, -1.0
+            for i in range(2, len(cs) - 2):
+                if abs(cs[i]["start"] - mid) > 300:
+                    continue
+                gap = cs[i]["start"] - cs[i - 1]["end"]
+                if gap > best_gap:
+                    best_gap, best_i = gap, i
+            final.append({"start": cs[0]["start"], "end": cs[best_i - 1]["end"], "cues": cs[:best_i]})
+            seg = {"start": cs[best_i]["start"], "end": cs[-1]["end"], "cues": cs[best_i:]}
+        final.append(seg)
+    return final
+
+
+async def _plan_segments(cues: list[dict], txt_p: dict, txt_m: str,
+                         course: str, jid: str) -> list[dict]:
+    """让文本模型按教学内容判断主题边界，而不是按固定时长切。"""
+    n = len(cues)
+    if n == 0:
+        return []
+    win = 40
+    ranges = [(i, min(i + win, n)) for i in range(0, n, win)]
+    sem = asyncio.Semaphore(3)
+
+    async def one(w: int) -> int | None:
+        a, b = ranges[w]
+        part = [{"i": j, **c} for j, c in enumerate(cues[a:b], start=a)]
+        prev_tail = "".join(c["text"] for c in cues[max(0, a - 3):a])
+        async with sem:
+            try:
+                out = await llm.complete(
+                    txt_p, txt_m, prompts.segment_plan_messages(part, prev_tail, course),
+                    think=False, temperature=0.1, json_mode=True, max_tokens=300,
+                )
+                data = llm.parse_json_loose(out)
+                k = data.get("new_topic_start") if isinstance(data, dict) else None
+                if k is None:
+                    return None
+                k = int(k)
+                if a <= k < b and k > 0:
+                    return k
+            except Exception as e:  # noqa: BLE001
+                db.update_job(jid, log_line=f"第 {w+1} 个窗口主题判断失败：{str(e)[:90]}")
+        return None
+
+    results = await asyncio.gather(*[one(i) for i in range(len(ranges))])
+    cuts = sorted({0, n, *[k for k in results if k]})
+
+    if len(cuts) <= 2 and (cues[-1]["end"] - cues[0]["start"]) > 900:
+        # 模型没给出任何主题边界时退回到长停顿切分，避免整节课变成一段
+        fallback = _group_segments(cues, target=600, max_len=1200)
+        db.update_job(jid, log_line="模型未识别出主题边界，使用停顿切分兜底")
+        return fallback
+    return _slice_by_cuts(cues, cuts)
 
 
 def _local_segment_info(text: str) -> dict:
@@ -179,14 +253,11 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
     try:
         # ---------------- 参数
         chunk_sec = float(opts.get("chunk_seconds") or ui.get("asr_chunk_seconds") or 300)
-        seg_target = float(opts.get("segment_minutes") or ui.get("segment_minutes") or 8) * 60
         translation_lang = opts.get("translation_lang", ui.get("translation_lang", "en"))
         term_policy = opts.get("term_policy", ui.get("term_policy", "keep_en"))
         glossary = (opts.get("glossary") or "").strip()
         frames_n = int(opts.get("frames_per_chunk", ui.get("frames_per_chunk", 4)))
         skip_refine = bool(opts.get("skip_refine"))
-        ref_path = opts.get("reference_path") or meta.get("reference_path") or ""
-        ref_text = load_text(ref_path) if ref_path else ""
         course = v["title"]
 
         asr_p, asr_m = _role(opts, "asr")
@@ -203,7 +274,6 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         meta.update({k: info[k] for k in ("width", "height", "vcodec", "acodec",
                                           "has_video", "has_audio", "format")})
         meta["media_kind"] = "video" if info["has_video"] else "audio"
-        meta["reference_path"] = ref_path
         meta["analysis"] = {
             "asr": f"{asr_p['name']} / {asr_m}", "refine": f"{ref_p['name']} / {ref_m}",
             "text": f"{txt_p['name']} / {txt_m}",
@@ -295,13 +365,11 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                 if not part:
                     continue
                 frames = await asyncio.to_thread(_frames_for, v, vdir, cs, cl, frames_n)
-                raw_join = "".join(c.get("raw") or "" for c in part)
-                ref_excerpt = best_excerpt(ref_text, raw_join) if ref_text else ""
                 try:
                     ctx_before = "".join(c.get("text", "") for c in all_cues[max(0, a - 3):a])
                     ctx_after = "".join(c.get("text", "") for c in all_cues[b:b + 3])
                     msgs = prompts.refine_messages(
-                        part, reference=ref_excerpt, glossary=glossary,
+                        part, glossary=glossary,
                         term_policy=term_policy, translation_lang=translation_lang,
                         context_before=ctx_before, context_after=ctx_after,
                         frames=frames, course=course,
@@ -347,8 +415,8 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         _check(jid)
 
         # ---------------- 分段 + 摘要
-        db.update_job(jid, progress=84, message="切分课程段落")
-        raw_segs = _group_segments(all_cues, seg_target)
+        db.update_job(jid, progress=84, message="按内容切分课程段落")
+        raw_segs = await _plan_segments(all_cues, txt_p, txt_m, course, jid)
         sem = asyncio.Semaphore(3)
 
         async def seg_info(s: dict, idx: int) -> dict:

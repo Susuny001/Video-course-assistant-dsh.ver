@@ -79,7 +79,6 @@ async def test_settings(body: dict = Body(...)):
 @router.post("/import")
 async def import_videos(body: dict = Body(default={})):
     paths = body.get("paths") or []
-    ref = body.get("reference_path") or ""
     if not paths:
         return {"ok": False, "message": "没有选择文件", "videos": []}
     added = []
@@ -93,17 +92,12 @@ async def import_videos(body: dict = Body(default={})):
             added.append({"ok": False, "path": p, "error": str(e)})
             continue
         title = Path(p).stem.replace("_", " ")
-        if not ref:
-            guess = Path(p).with_suffix(".md")
-            if guess.exists():
-                ref = str(guess)
         v = db.add_video(
             p, title, duration=info["duration"], width=info["width"], height=info["height"],
             size=info["size"], status="new",
             meta={"format": info["format"], "vcodec": info["vcodec"], "acodec": info["acodec"],
                   "has_video": info["has_video"], "has_audio": info["has_audio"],
-                  "media_kind": "video" if info["has_video"] else "audio",
-                  "reference_path": ref},
+                  "media_kind": "video" if info["has_video"] else "audio"},
         )
         added.append({"ok": True, "video": v})
     return {"ok": True, "videos": added}
@@ -111,13 +105,10 @@ async def import_videos(body: dict = Body(default={})):
 
 @router.post("/import/dialog")
 async def import_dialog(body: dict = Body(default={})):
-    kind = body.get("kind", "video")
-    files = await asyncio.to_thread(dialog.pick_files, kind, kind == "video")
+    files = await asyncio.to_thread(dialog.pick_files, "video", True)
     if not files:
         return {"ok": False, "videos": [], "paths": []}
-    if kind != "video":
-        return {"ok": True, "paths": files}
-    return await import_videos({"paths": files, "reference_path": body.get("reference_path", "")})
+    return await import_videos({"paths": files})
 
 
 @router.get("/videos")
@@ -158,9 +149,6 @@ def save_position(vid: str, body: dict = Body(...)):
 async def analyze(vid: str, opts: dict = Body(default={})):
     v = _video_or_404(vid)
     meta = dict(v.get("meta") or {})
-    if opts.get("reference_path") is not None:
-        meta["reference_path"] = opts["reference_path"]
-        db.update_video(vid, meta=meta)
     job = db.create_job(vid)
     _bg(pipeline.analyze(vid, job, opts))
     return {"ok": True, "job": job}

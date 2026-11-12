@@ -251,7 +251,6 @@
               <option value="none">全部本地语言</option>
             </select>
           </label>
-          <label class="field"><span>每段时长（分钟）</span><input id="uiSegMin" type="number" min="2" max="30" step="1"></label>
           <label class="field"><span>每段抽帧数</span><input id="uiFrames" type="number" min="0" max="8" step="1"></label>
           <label class="field"><span>字幕字号</span><input id="uiFont" type="number" min="16" max="48" step="2"></label>
           <label class="field"><span>常用术语表（可选）</span>
@@ -275,14 +274,6 @@
     </div>
     <div class="modal-body">
       <div class="form-grid">
-        <label class="field full"><span>参考文字稿（可选，强烈建议）</span>
-          <div class="row gap8">
-            <input id="anRef" placeholder="选择与录音对应的文字稿，纠错会准很多">
-            <button class="btn ghost sm" id="btnPickRef">选择</button>
-          </div>
-        </label>
-        <label class="field"><span>每段时长（分钟）</span><input id="anSegMin" type="number" min="2" max="30"></label>
-        <label class="field"><span>每段抽帧数（看画面纠错）</span><input id="anFrames" type="number" min="0" max="8"></label>
         <label class="field"><span>译文语言</span>
           <select id="anTrLang"><option value="en">English</option><option value="none">不翻译</option>
             <option value="zh">中文</option><option value="ja">日本語</option></select>

@@ -17,17 +17,10 @@ def pick_files(kind: str = "video", multiple: bool = True) -> list[str]:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        if kind == "video":
-            types = [("视频 / 音频", "*.mp4 *.mkv *.avi *.mov *.flv *.wmv *.webm *.ts *.m4v "
-                                    "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"),
-                     ("所有文件", "*.*")]
-            title = "选择课程视频或录音"
-        elif kind == "text":
-            types = [("文字稿", "*.md *.txt *.srt"), ("所有文件", "*.*")]
-            title = "选择参考文字稿"
-        else:
-            types = [("所有文件", "*.*")]
-            title = "选择文件"
+        types = [("视频 / 音频", "*.mp4 *.mkv *.avi *.mov *.flv *.wmv *.webm *.ts *.m4v "
+                                "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"),
+                 ("所有文件", "*.*")]
+        title = "选择课程视频或录音"
         try:
             if multiple:
                 files = filedialog.askopenfilenames(title=title, filetypes=types)
