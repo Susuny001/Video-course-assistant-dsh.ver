@@ -91,11 +91,11 @@ DEFAULT_PROVIDERS = [
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "models": [
+            "qwen3.8-flash",
+            "qwen-flash",
             "qwen-plus",
-            "qwen-max",
             "qwen3-max",
             "qwen-vl-max",
-            "qwen-vl-plus",
         ],
         "asr_models": [],
         "vision": True,
