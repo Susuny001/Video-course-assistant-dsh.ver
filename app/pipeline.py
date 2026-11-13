@@ -398,6 +398,7 @@ class _Live:
         self.source_lang = ""
         self.last_pub = 0.0
         self.last_db = 0.0
+        self.ocr_fail = 0
 
     def add_cues(self, cues: list[dict]) -> None:
         self.cues.extend(cues)
@@ -438,7 +439,10 @@ class _Live:
             return False
         if not self.ocr_ready or self.ocr_all_done():
             return True
-        return self.ratio(self.ocr_done) >= 0.25
+        if self.ratio(self.ocr_done) >= 0.25:
+            return True
+        # OCR 服务连续失败时不能一直干等：只要语音已过 25%，先用纯文本纠错/翻译
+        return self.ocr_fail >= 6 and not self.ocr_done
 
     def asr_all_done(self) -> bool:
         return all(u["status"] in ("done", "failed") for u in self.asr_units)
@@ -544,7 +548,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
 
         # ---------------- 音轨（已有字幕时不需要）
         audio = vdir / "audio.mp3"
-        sub_path = opts.get("subtitle_path") or ""
+        sub_path = opts.get("subtitle_path") or meta.get("subtitle_path") or ""
         has_srt = bool(sub_path and Path(sub_path).exists())
         if not has_srt:
             db.update_job(jid, progress=3, message="提取音轨", log_line="提取音轨")
@@ -627,6 +631,11 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     state.make_batches(cues, batch_size, skip_fix=skip_refine)
                     state.asr_done.append((u["start"], u["end"]))
                     u["status"] = "done"
+                    # 语音一出来就先落库，保证“边看边出字幕”，不用等修正门槛
+                    now = time.time()
+                    if now - state.last_db >= 2.5:
+                        state.last_db = now
+                        db.replace_cues(vid, state.ordered_cues())
                     state.log(f"语音第 {u['idx'] + 1} 段完成：{len(cues)} 句")
                 except Canceled:
                     raise
@@ -645,6 +654,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     continue
                 u["status"] = "running"
                 _check(jid)
+                ok = True
                 try:
                     part = u["cues"]
                     bdur = max(1.0, part[-1]["end"] - part[0]["start"])
@@ -655,13 +665,20 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                             ocr_p, ocr_models, frames[0])
                         u["screen"] = screen
                         if err:
+                            ok = False
+                            state.ocr_fail += 1
                             state.log(f"画面 OCR 失败：{err[:80]}")
+                        else:
+                            state.ocr_fail = 0
                 except Canceled:
                     raise
                 except Exception as e:  # noqa: BLE001
+                    ok = False
+                    state.ocr_fail += 1
                     state.log(f"画面 OCR 异常：{str(e)[:80]}")
                 u["status"] = "done"
-                if u.get("screen"):
+                # 处理过就算覆盖：黑板没字的画面也不能让修正/翻译一直等门槛
+                if ok:
                     state.ocr_done.append((u["start"], u["end"]))
                 state.publish()
 

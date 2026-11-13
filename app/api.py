@@ -404,6 +404,9 @@ def cover(vid: str):
     raise HTTPException(404, "没有封面")
 
 
+_frame_cache: dict[tuple[str, int], str] = {}
+
+
 @router.get("/videos/{vid}/frame")
 async def frame(vid: str, t: float = 0):
     v = _video_or_404(vid)
@@ -411,12 +414,41 @@ async def frame(vid: str, t: float = 0):
     if meta.get("media_kind") == "audio":
         raise HTTPException(404, "纯音频没有画面")
     src = meta.get("play_path") or v["path"]
-    out = video_dir(vid) / "frames" / "onfly" / f"{int(t)}.jpg"
+    sec = int(t)
+    key = (vid, sec)
+    cached = _frame_cache.get(key)
+    if cached and Path(cached).exists():
+        return FileResponse(cached, headers={"Cache-Control": "max-age=3600"})
+    out = video_dir(vid) / "frames" / "onfly" / f"{sec}.jpg"
     if not out.exists():
-        await asyncio.to_thread(media.extract_frame, src, t, str(out), 960)
+        await asyncio.to_thread(media.extract_frame, src, sec, str(out), 960)
     if not out.exists():
+        _frame_cache.pop(key, None)
         raise HTTPException(404, "抽帧失败")
+    _frame_cache[key] = str(out)
     return FileResponse(out, headers={"Cache-Control": "max-age=3600"})
+
+
+@router.get("/videos/{vid}/shot")
+async def shot(vid: str, t: float = 0):
+    """按时间点抽一帧保存到 shots/，用于截图 / 导出静态帧。"""
+    v = _video_or_404(vid)
+    meta = v.get("meta") or {}
+    if meta.get("media_kind") == "audio":
+        raise HTTPException(400, "当前课程是录音，没有画面")
+    duration = float(v.get("duration") or 0)
+    t = max(0.0, min(float(t or 0), max(0.0, duration - 0.1)))
+    src = _media_path(v)
+    ms = int(round(t * 1000))
+    out = video_dir(vid) / "shots" / f"shot_{ms}.jpg"
+    if not out.exists():
+        await asyncio.to_thread(media.extract_frame, src, t, str(out), 1280)
+    if not out.exists() or out.stat().st_size < 500:
+        raise HTTPException(404, "抽帧失败")
+    name = f"shot_{ms}.jpg"
+    return FileResponse(out, media_type="image/jpeg",
+                        headers={"Content-Disposition": f'inline; filename="{name}"',
+                                 "Cache-Control": "max-age=3600"})
 
 
 # ---------------------------------------------------------------- 导出

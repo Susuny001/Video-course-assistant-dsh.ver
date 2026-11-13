@@ -112,8 +112,8 @@ def main(argv: list[str] | None = None) -> None:
         import webview
         load_settings()
         print("[main] opening webview window", flush=True)
-        webview.create_window(APP_TITLE, url, width=1480, height=920,
-                              min_size=(1080, 680), background_color="#0b0f17")
+        webview.create_window(APP_TITLE, url, width=1480, height=920, maximized=True,
+                              min_size=(1000, 620), background_color="#0b0f17")
         webview.start(debug=False)
         print("[main] window closed", flush=True)
     except Exception as e:  # noqa: BLE001

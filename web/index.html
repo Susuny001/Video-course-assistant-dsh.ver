@@ -87,7 +87,6 @@
         <div class="jobbar-fill" id="jobFill"></div>
         <span id="jobText">分析中…</span>
       </div>
-      <button class="btn ghost sm" id="btnReanalyze">重新分析</button>
       <button class="btn ghost sm" id="btnExport">字幕<svg class="ico"><use href="#i-export"/></svg></button>
       <div class="menu-anchor">
         <button class="btn ghost sm" id="btnExportMenu">SRT / 笔记 / JSON</button>
@@ -129,6 +128,7 @@
           </div>
         </div>
         <div class="center-flash" id="centerFlash"><svg class="ico"><use href="#i-play"/></svg></div>
+        <div id="fullTitle"></div>
       </div>
 
       <div class="controls">
@@ -143,10 +143,12 @@
           <div class="tl-played" id="tlPlayed"></div>
           <div class="tl-selection hidden" id="tlSelection"></div>
           <div class="tl-head" id="tlHead"></div>
-          <div class="tl-tip" id="tlTip"></div>
+          <div class="tl-tip" id="tlTip"><img id="tlThumb" alt="" class="hidden"><span id="tlTipText"></span></div>
         </div>
         <div class="ctrl-row">
           <button class="icon-btn" id="btnPlay"><svg class="ico"><use href="#i-play"/></svg></button>
+          <button class="icon-btn sm" id="btnPrevSeg" title="上一段（PageUp）">‹段</button>
+          <button class="icon-btn sm" id="btnNextSeg" title="下一段（PageDown）">段›</button>
           <button class="icon-btn sm" id="btnBack10" title="后退 10 秒">-10s</button>
           <button class="icon-btn sm" id="btnFwd10" title="前进 10 秒">+10s</button>
           <span class="time" id="timeNow">00:00</span>
@@ -157,12 +159,31 @@
           <input class="vol-range" id="volRange" type="range" min="0" max="100" step="1" value="100" title="音量">
           <button class="icon-btn sm" id="btnPip" title="画中画"><svg class="ico"><use href="#i-pip"/></svg></button>
           <span class="spacer"></span>
+          <div class="ctrl-group">
+            <div class="speed-presets" id="speedPresets">
+              <button class="chip" data-rate="0.5">0.5</button>
+              <button class="chip" data-rate="1">1</button>
+              <button class="chip" data-rate="1.25">1.25</button>
+              <button class="chip" data-rate="1.5">1.5</button>
+              <button class="chip" data-rate="2">2</button>
+            </div>
+            <input id="speedSel" class="mini-input speed-input" type="number" min="0.25" max="4" step="0.05" value="1" title="播放速度（0.25-4）">
+          </div>
+          <button class="icon-btn sm" id="btnFull" title="全屏（F）"><svg class="ico"><use href="#i-full"/></svg></button>
+        </div>
+        <div class="ctrl-row sub-row">
           <div class="selection-tools">
             <button class="chip" id="btnMarkA" title="标记选区起点（快捷键 [）">设 A</button>
             <button class="chip" id="btnMarkB" title="标记选区终点（快捷键 ]）">设 B</button>
             <span class="sel-label muted" id="selLabel"></span>
             <button class="chip accent hidden" id="btnAskSel">就这段问 AI</button>
             <button class="chip hidden" id="btnClearSel">清除</button>
+          </div>
+          <div class="ctrl-group">
+            <button class="chip" id="btnLoopAB" title="A-B 循环：关闭 / 循环选区 / 循环当前段">循环</button>
+            <button class="chip" id="btnSubDelayMinus" title="字幕提前 0.1 秒">-0.1s</button>
+            <span class="sel-label muted" id="subDelayLabel" title="字幕延迟">0.0s</span>
+            <button class="chip" id="btnSubDelayPlus" title="字幕延后 0.1 秒">+0.1s</button>
           </div>
           <label class="switch" title="显示 / 隐藏字幕">
             <input type="checkbox" id="subToggle" checked><span></span>字幕
@@ -172,18 +193,20 @@
             <option value="src">仅原文</option>
             <option value="tr">仅译文</option>
           </select>
-          <input id="speedSel" class="mini-input speed-input" type="number" min="0.25" max="4" step="0.05" value="1" title="播放速度（0.25-4）">
           <label class="mini-label">字号<input id="fontInput" class="mini-input font-input" type="number" min="12" max="64" step="1" value="26"></label>
-          <button class="icon-btn sm" id="btnFull"><svg class="ico"><use href="#i-full"/></svg></button>
+          <button class="chip" id="btnTheater" title="剧场模式：只留播放器">剧场</button>
+          <button class="chip" id="btnShot" title="截取当前画面并保存">截图</button>
         </div>
       </div>
 
-      <div class="transcript-pane">
+      <div class="resizer-h" id="rsVert" title="上下拖动调整字幕区高度"></div>
+      <div class="transcript-pane" id="transcriptPane">
         <div class="pane-head">
           <span>字幕文稿</span>
           <div class="row gap8">
             <input class="mini-input" id="findCue" placeholder="在字幕中查找">
             <button class="btn ghost sm" id="btnFollow">跟随播放</button>
+            <button class="icon-btn xs" id="btnCollapseTranscript" title="收起 / 展开字幕区">▾</button>
           </div>
         </div>
         <div id="cueList" class="cue-list"></div>
@@ -253,6 +276,7 @@
       <div class="settings-grid">
         <div class="settings-main">
           <h4>模型服务商 <span class="muted small">（OpenAI 兼容接口，Key 只保存在本机）</span></h4>
+          <div class="muted small" style="margin:4px 0 10px">新增可配置：百度千帆、腾讯混元、火山方舟、魔搭 ModelScope、NVIDIA NIM。填入 Key 后，这些平台的模型会自动加入对应环节的候选轮换，不再只走原来那几家。</div>
           <div id="providerList" class="provider-list"></div>
           <button class="btn ghost sm" id="btnAddProvider">+ 自定义服务商</button>
         </div>

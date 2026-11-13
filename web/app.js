@@ -36,6 +36,9 @@
     lastPosSave: 0,
     mdTimer: null,
     autoTranscoded: false,
+    loopMode: 0,
+    loopCache: null,
+    subDelay: 0,
   };
 
   const fmtTime = (s) => {
@@ -146,6 +149,14 @@
     loadChats();
     applySubtitleStyle();
 
+    state.loopMode = 0;
+    state.loopCache = null;
+    updateLoopBtn();
+    try { state.subDelay = Number(localStorage.getItem(SUB_DELAY_KEY(d.video.id))) || 0; } catch (e) { state.subDelay = 0; }
+    applySubDelayLabel();
+    const ft = $("#fullTitle");
+    if (ft) ft.textContent = d.video.title || "";
+
     const pos = Number(meta.position || 0);
     if (pos > 5) {
       const apply = () => {
@@ -156,6 +167,7 @@
       else video.addEventListener("loadedmetadata", apply, { once: true });
     }
     startLive(d.job, vid);
+    maybeAutoAnalyze(d, vid);
   }
 
   /* ------------------------------------------------ 实时处理进度 */
@@ -192,6 +204,17 @@
       const j = await api(`/api/jobs/${jobId}`);
       if (!state.cur || state.cur.id !== vid) { stopLive(); return; }
       renderCoverage(j.coverage);
+      const pct = Math.round(j.progress || 0);
+      const bar = $("#jobBar");
+      if (bar) {
+        if (j.status === "running") {
+          bar.classList.remove("hidden");
+          $("#jobFill").style.width = pct + "%";
+          $("#jobText").textContent = `${j.message || "分析中"} ${pct}%`;
+        } else {
+          bar.classList.add("hidden");
+        }
+      }
       if (j.message) $("#pMeta").textContent = [fmtDur(state.cur.duration), j.message].filter(Boolean).join(" · ");
       if (j.status === "running") {
         const r = await api(`/api/videos/${vid}/cues`);
@@ -236,6 +259,34 @@
     liveVid = vid;
     try { renderCoverage((await api(`/api/jobs/${job.id}`)).coverage); } catch (e) {}
     liveTimer = setInterval(() => pollLive(job.id, vid), 2500);
+  }
+
+  /* 打开课程就自动开始分析，边看边出字幕；同一门课只自动触发一次 */
+  const autoTried = {};
+  async function maybeAutoAnalyze(d, vid) {
+    if (state.cues.length) return;
+    const j = d.job;
+    // 只有“确实还在跑”的任务才不重复启动；进程重启后遗留的 running 任务按过期处理
+    const age = j ? Date.now() / 1000 - Number(j.updated_at || 0) : 0;
+    if (j && j.status === "running" && age < 180) return;
+    if (autoTried[vid]) return;
+    autoTried[vid] = 1;
+    const ui = state.settings?.ui || {};
+    try {
+      const r = await api(`/api/videos/${vid}/analyze`, {
+        method: "POST",
+        body: {
+          translation_lang: ui.translation_lang || "zh",
+          term_policy: ui.term_policy || "keep_en",
+          glossary: ui.glossary || "",
+        },
+      });
+      if (!state.cur || state.cur.id !== vid) return;
+      toast("已自动开始分析：边看边出字幕", "ok");
+      startLive(r.job, vid);
+    } catch (e) {
+      toast("自动分析启动失败：" + e.message, "err");
+    }
   }
 
   function sendFocus() {
@@ -296,7 +347,7 @@
     box.innerHTML = "";
     $("#segCount").textContent = state.segments.length ? `${state.segments.length} 段` : "";
     if (!state.segments.length) {
-      box.innerHTML = '<div class="chat-empty">还没有分段，点右上角「重新分析」生成字幕与摘要。</div>';
+      box.innerHTML = '<div class="chat-empty">还没有分段，正在自动分析，稍等就会出现课程分段。</div>';
       return;
     }
     const frag = document.createDocumentFragment();
@@ -358,7 +409,7 @@
     box.innerHTML = "";
     state.cueEls = [];
     if (!state.cues.length) {
-      box.innerHTML = '<div class="chat-empty">还没有字幕。点「重新分析」生成双语字幕。</div>';
+      box.innerHTML = '<div class="chat-empty">还没有字幕，正在自动分析，稍等就会边看边出字幕。</div>';
       return;
     }
     const kw = filter.trim().toLowerCase();
@@ -389,13 +440,14 @@
 
   function cueIndexAt(t) {
     const cues = state.cues;
+    const tt = t - (state.subDelay || 0);
     let lo = 0, hi = cues.length - 1, ans = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (cues[mid].start <= t + 0.05) { ans = mid; lo = mid + 1; }
+      if (cues[mid].start <= tt + 0.05) { ans = mid; lo = mid + 1; }
       else hi = mid - 1;
     }
-    if (ans >= 0 && t > cues[ans].end + 0.6) return -1;
+    if (ans >= 0 && tt > cues[ans].end + 0.6) return -1;
     return ans;
   }
 
@@ -431,6 +483,7 @@
   function onTime() {
     const video = $("#video");
     const t = video.currentTime || 0;
+    if (loopTick(t)) return;
     const dur = video.duration || state.cur?.duration || 0;
     $("#timeNow").textContent = fmtTime(t);
     $("#timeTotal").textContent = fmtTime(dur);
@@ -526,6 +579,7 @@
   function initTimeline() {
     const tl = $("#timeline");
     let dragging = false;
+    let thumbTimer = null;
     const seekFromEvent = (e) => {
       const rect = tl.getBoundingClientRect();
       const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
@@ -543,14 +597,32 @@
       const dur = $("#video").duration || state.cur?.duration || 0;
       const t = ratio * dur;
       const tip = $("#tlTip");
+      const tipText = $("#tlTipText");
+      const thumb = $("#tlThumb");
       const seg = state.segments[segIndexAt(t)];
       tip.style.display = "block";
-      tip.style.left = (ratio * 100) + "%";
-      tip.textContent = `${fmtTime(t)}${seg ? " · " + seg.title : ""}`;
+      tip.style.left = Math.min(92, Math.max(8, ratio * 100)) + "%";
+      const label = `${fmtTime(t)}${seg ? " · " + seg.title : ""}`;
+      if (tipText) tipText.textContent = label; else tip.textContent = label;
+      if (thumb && state.cur && (state.cur.meta || {}).media_kind !== "audio") {
+        const sec = Math.floor(t);
+        clearTimeout(thumbTimer);
+        thumbTimer = setTimeout(() => {
+          if (!state.cur || (state.cur.meta || {}).media_kind === "audio") return;
+          if (thumb.dataset.t !== String(sec)) {
+            thumb.dataset.t = String(sec);
+            thumb.src = `/api/videos/${state.cur.id}/frame?t=${sec}`;
+          }
+          thumb.classList.remove("hidden");
+        }, 220);
+      }
       if (dragging) seekFromEvent(e);
     });
     tl.addEventListener("pointerup", () => { dragging = false; });
-    tl.addEventListener("pointerleave", () => { $("#tlTip").style.display = "none"; });
+    tl.addEventListener("pointerleave", () => {
+      clearTimeout(thumbTimer);
+      $("#tlTip").style.display = "none";
+    });
   }
 
   /* ------------------------------------------------ 问答 */
@@ -912,10 +984,7 @@
         toast("已导入 " + r.videos.length + " 个文件", "ok");
         await loadVideos();
         const v = r.videos.find((x) => x.ok)?.video;
-        if (v) {
-          state.cur = v;
-          openAnalyze();
-        }
+        if (v) openPlayer(v.id);
       } else if (r.paths) {
         /* 选择文字稿 */
       } else {
@@ -1040,9 +1109,209 @@
     wrap.addEventListener("dblclick", (e) => {
       if (e.target.closest(".controls") || e.target.closest("button")) return;
       if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-      if (document.fullscreenElement) document.exitFullscreen();
-      else wrap.requestFullscreen?.();
+      toggleStageFullscreen();
     });
+  }
+
+  /* ------------------------------------------------ 播放器扩展 */
+  const SUB_DELAY_KEY = (id) => "yk.subdelay." + id;
+  const TRH_KEY = "yk.transcript_h";
+  const TRC_KEY = "yk.transcript_collapsed";
+
+  function applySubDelayLabel() {
+    const el = $("#subDelayLabel");
+    if (!el) return;
+    const d = Number(state.subDelay) || 0;
+    el.textContent = (d > 0 ? "+" : "") + d.toFixed(1) + "s";
+    el.title = d === 0 ? "字幕延迟 0 秒（点两侧按钮微调）" : `字幕延迟 ${d.toFixed(1)} 秒（正数=字幕更晚）`;
+  }
+
+  function bumpSubDelay(delta) {
+    state.subDelay = Math.max(-10, Math.min(10, Math.round(((Number(state.subDelay) || 0) + delta) * 10) / 10));
+    if (state.cur) { try { localStorage.setItem(SUB_DELAY_KEY(state.cur.id), String(state.subDelay)); } catch (e) {} }
+    applySubDelayLabel();
+    const ci = cueIndexAt($("#video").currentTime || 0);
+    state.activeCue = ci;
+    renderSubtitle(ci);
+  }
+
+  function updateLoopBtn() {
+    const btn = $("#btnLoopAB");
+    if (!btn) return;
+    const names = ["循环", "循环选区", "循环本段"];
+    btn.textContent = names[state.loopMode] || names[0];
+    btn.classList.toggle("accent", state.loopMode > 0);
+    btn.title = `循环：${names[state.loopMode] || names[0]}（点一下切换：关 → 选区 → 当前段）`;
+    state.loopCache = null;
+  }
+
+  function loopTick(t) {
+    if (!state.loopMode) return false;
+    if (state.loopMode === 1) {
+      const { a, b } = state.sel;
+      if (a == null || b == null || b <= a) return false;
+      if (t >= b - 0.08) { seekTo(a + 0.02); return true; }
+      return false;
+    }
+    const seg = state.segments[segIndexAt(t)];
+    if (seg) state.loopCache = seg;
+    const r = seg || state.loopCache;
+    if (!r) return false;
+    if (t >= r.end - 0.08) { seekTo(r.start + 0.02); state.loopCache = null; return true; }
+    return false;
+  }
+
+  function jumpSeg(dir) {
+    const segs = state.segments;
+    if (!segs.length) return;
+    const video = $("#video");
+    const t = video.currentTime || 0;
+    if (dir > 0) {
+      const next = segs.find((s) => s.start > t + 0.2);
+      seekTo(next ? next.start + 0.05 : Math.max(0, Math.min((video.duration || 0) - 0.3, segs[segs.length - 1].end)));
+      return;
+    }
+    const cur = segIndexAt(t);
+    if (cur > 0 && t - segs[cur].start > 3) { seekTo(segs[cur].start + 0.05); return; }
+    let prev = segs[0];
+    for (const s of segs) { if (s.start < t - 1) prev = s; else break; }
+    seekTo(prev.start + 0.05);
+  }
+
+  function toggleStageFullscreen() {
+    const stage = document.querySelector(".stage");
+    if (document.fullscreenElement) document.exitFullscreen();
+    else stage?.requestFullscreen?.();
+  }
+
+  async function takeShot() {
+    if (!state.cur) return;
+    const t = $("#video").currentTime || 0;
+    try {
+      const r = await fetch(`/api/videos/${state.cur.id}/shot?t=${t.toFixed(2)}`);
+      if (!r.ok) throw new Error((await r.text()) || r.statusText);
+      const blob = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(state.cur.title || "截图").replace(/[\\/:*?"<>|]/g, "_")}_${Math.floor(t)}s.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      toast("已保存当前画面截图", "ok");
+    } catch (e) { toast("截图失败：" + e.message, "err"); }
+  }
+
+  function initTranscriptPane() {
+    const pane = $("#transcriptPane"), rs = $("#rsVert"), stage = document.querySelector(".stage");
+    if (!pane) return;
+    try {
+      const h = Number(localStorage.getItem(TRH_KEY));
+      if (h >= 10 && h <= 62) pane.style.setProperty("--tr-h", h + "%");
+      if (localStorage.getItem(TRC_KEY) === "1") {
+        pane.classList.add("collapsed");
+        if (rs) rs.hidden = true;
+      }
+    } catch (e) {}
+    const btn = $("#btnCollapseTranscript");
+    const syncArrow = () => {
+      if (!btn) return;
+      const c = pane.classList.contains("collapsed");
+      btn.textContent = c ? "▴" : "▾";
+      btn.title = c ? "展开字幕区" : "收起字幕区";
+    };
+    syncArrow();
+    btn?.addEventListener("click", () => {
+      const c = pane.classList.toggle("collapsed");
+      if (rs) rs.hidden = c;
+      try { localStorage.setItem(TRC_KEY, c ? "1" : "0"); } catch (e) {}
+      syncArrow();
+    });
+    if (!rs || !stage) return;
+    rs.addEventListener("dblclick", () => {
+      pane.style.removeProperty("--tr-h");
+      try { localStorage.removeItem(TRH_KEY); } catch (e) {}
+    });
+    rs.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const stageH = stage.getBoundingClientRect().height || 1;
+      const startY = e.clientY;
+      const startH = pane.getBoundingClientRect().height;
+      rs.classList.add("dragging");
+      rs.setPointerCapture?.(e.pointerId);
+      const move = (ev) => {
+        const next = Math.min(stageH * 0.62, Math.max(56, startH - (ev.clientY - startY)));
+        const pct = Math.min(62, Math.max(10, (next / stageH) * 100));
+        pane.style.setProperty("--tr-h", pct.toFixed(2) + "%");
+        try { localStorage.setItem(TRH_KEY, pct.toFixed(2)); } catch (e) {}
+      };
+      const up = () => {
+        rs.classList.remove("dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+  }
+
+  function initPlayerExtras() {
+    const video = $("#video");
+
+    $("#btnPrevSeg")?.addEventListener("click", () => jumpSeg(-1));
+    $("#btnNextSeg")?.addEventListener("click", () => jumpSeg(1));
+
+    $("#btnLoopAB")?.addEventListener("click", () => {
+      state.loopMode = (state.loopMode + 1) % 3;
+      if (state.loopMode === 1 && (state.sel.a == null || state.sel.b == null)) {
+        toast("先在时间轴上设 A、B 两点；也可以再点一下用「循环本段」");
+      }
+      updateLoopBtn();
+    });
+
+    $("#btnSubDelayMinus")?.addEventListener("click", () => bumpSubDelay(-0.1));
+    $("#btnSubDelayPlus")?.addEventListener("click", () => bumpSubDelay(0.1));
+
+    const speedEl = $("#speedSel");
+    const setRate = (v) => {
+      let n = Math.round(Number(v) * 100) / 100;
+      if (!isFinite(n)) n = 1;
+      n = Math.min(4, Math.max(0.25, n));
+      if (video) video.playbackRate = n;
+      if (speedEl) speedEl.value = String(n);
+      $$("#speedPresets .chip").forEach((b) => b.classList.toggle("on", Number(b.dataset.rate) === n));
+    };
+    $$("#speedPresets .chip").forEach((b) => b.addEventListener("click", () => setRate(b.dataset.rate)));
+    speedEl?.addEventListener("input", () => {
+      const n = parseFloat(speedEl.value);
+      if (isFinite(n) && video) video.playbackRate = Math.min(4, Math.max(0.25, n));
+      $$("#speedPresets .chip").forEach((b) => b.classList.toggle("on", Number(b.dataset.rate) === Number(speedEl.value)));
+    });
+
+    const thBtn = $("#btnTheater"), ws = getWorkspace();
+    if (thBtn && ws) {
+      const applyTheater = (on) => {
+        ws.classList.toggle("theater", on);
+        thBtn.classList.toggle("accent", on);
+        thBtn.textContent = on ? "退出剧场" : "剧场";
+        try { localStorage.setItem("yk.theater", on ? "1" : "0"); } catch (e) {}
+      };
+      try { if (localStorage.getItem("yk.theater") === "1") applyTheater(true); } catch (e) {}
+      thBtn.addEventListener("click", () => applyTheater(!ws.classList.contains("theater")));
+    }
+
+    $("#btnShot")?.addEventListener("click", takeShot);
+
+    document.addEventListener("fullscreenchange", () => {
+      const on = !!document.fullscreenElement;
+      const ft = $("#fullTitle");
+      if (!ft) return;
+      ft.classList.toggle("show", on);
+      clearTimeout(ft.__hide);
+      if (on) ft.__hide = setTimeout(() => ft.classList.remove("show"), 2400);
+    });
+
+    initTranscriptPane();
   }
 
   /* ------------------------------------------------ 布局 */
@@ -1297,11 +1566,7 @@
     $("#btnFwd10").addEventListener("click", () => seekTo(video.currentTime + 10));
     initSpeedInput();
     $("#subToggle").addEventListener("change", () => renderSubtitle(state.activeCue));
-    $("#btnFull").addEventListener("click", () => {
-      const w = $("#videoWrap");
-      if (document.fullscreenElement) document.exitFullscreen();
-      else w.requestFullscreen?.();
-    });
+    $("#btnFull").addEventListener("click", toggleStageFullscreen);
     $("#btnMarkA").addEventListener("click", () => mark("a"));
     $("#btnMarkB").addEventListener("click", () => mark("b"));
     $("#btnClearSel").addEventListener("click", () => {
@@ -1332,7 +1597,6 @@
       await loadVideos();
     });
     $("#brandHome").addEventListener("click", () => $("#btnBack").click());
-    $("#btnReanalyze").addEventListener("click", openAnalyze);
     $("#btnStartAnalyze").addEventListener("click", startAnalyze);
     $("#btnPickSub").addEventListener("click", async () => {
       try {
@@ -1418,6 +1682,7 @@
     initPromptModal();
     initImportZone();
     initTimeline();
+    initPlayerExtras();
 
     document.addEventListener("keydown", (e) => {
       if ($("#view-player").classList.contains("hidden")) return;
@@ -1428,6 +1693,9 @@
       else if (k === "ArrowRight") seekTo(video.currentTime + 5);
       else if (k === "ArrowUp") { e.preventDefault(); video.volume = Math.min(1, video.volume + 0.05); }
       else if (k === "ArrowDown") { e.preventDefault(); video.volume = Math.max(0, video.volume - 0.05); }
+      else if (k === "PageUp") { e.preventDefault(); jumpSeg(-1); }
+      else if (k === "PageDown") { e.preventDefault(); jumpSeg(1); }
+      else if (k === "Escape" && document.fullscreenElement) document.exitFullscreen();
       else if (k === "j" || k === "J") seekTo(video.currentTime - 10);
       else if (k === "l" || k === "L") seekTo(video.currentTime + 10);
       else if (k === "m" || k === "M") $("#btnMute")?.click();
