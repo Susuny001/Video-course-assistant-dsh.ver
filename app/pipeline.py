@@ -241,6 +241,43 @@ def _salvage_cues(raw: str) -> dict:
     return {"cues": items} if items else {}
 
 
+def _asr_hint(title: str) -> str:
+    """给 Whisper 一点课程领域提示，减少数学/理科术语听错。"""
+    t = title or ""
+    hints = (
+        ("数学", "这是一节数学课，可能出现矩阵、向量、特征值、特征向量、转置、行列式、线性方程组、微积分。"),
+        ("物理", "这是一节物理课，可能出现力学、电磁学、公式、单位、实验。"),
+        ("化学", "这是一节化学课，可能出现化学式、溶液、反应、实验。"),
+        ("英语", "This is an English language class."),
+    )
+    for key, hint in hints:
+        if key in t:
+            return hint
+    return ""
+
+
+_REJECT = {"n": 0}
+
+
+def _norm_text(s: str) -> str:
+    return re.sub(r"[\W_]+", "", (s or "").lower(), flags=re.UNICODE)
+
+
+def _fidelity_ok(orig: str, new: str) -> bool:
+    """防止“纠错”模型把原句改写成另一段无关内容。"""
+    a, b = _norm_text(orig), _norm_text(new)
+    if not a:
+        return True
+    if not b:
+        return False
+    # 长度暴涨基本就是编造（原句很短时放宽一点绝对长度）
+    if len(b) > max(len(a) * 2, len(a) + 30):
+        return False
+    overlap = len(set(a) & set(b)) / max(1, len(set(a)))
+    # 公式/短句要求更高重合度，避免把 P I E T 扩写成实验步骤
+    return overlap >= (0.6 if len(a) <= 12 else 0.45)
+
+
 def _apply_refine(cues: list[dict], data: dict) -> int:
     items = data.get("cues") if isinstance(data, dict) else data
     if not isinstance(items, list):
@@ -262,8 +299,13 @@ def _apply_refine(cues: list[dict], data: dict) -> int:
             continue
         text = (it.get("text") or "").strip()
         if text:
-            c["text"] = text
-            n += 1
+            if _fidelity_ok(c.get("text", ""), text):
+                c["text"] = text
+                n += 1
+            else:
+                # 不采纳被改写的原文，也不采纳它的译文，整句保留原转写
+                _REJECT["n"] += 1
+                continue
         tr = (it.get("translation") or "").strip()
         if tr:
             c["translation"] = tr
@@ -499,6 +541,8 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         frames_n = int(opts.get("frames_per_chunk", ui.get("frames_per_chunk", 4)))
         skip_refine = bool(opts.get("skip_refine"))
         course = v["title"]
+        hint = _asr_hint(course)
+        asr_prompt = (course + "。" + hint)[:800] if hint else course[:800]
 
         asr_p, asr_m = _role(opts, "asr")
         ref_p, ref_m = _role(opts, "refine")
@@ -621,7 +665,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     await asyncio.to_thread(media.slice_audio, str(audio), u["start"], cl, str(part))
                     model = asr_models[u["idx"] % len(asr_models)]
                     res = await asr.transcribe(asr_p, model, str(part), language=sub_lang,
-                                               duration=cl, prompt=course)
+                                               duration=cl, prompt=asr_prompt)
                     cues = _unit_cues(res["segments"], u["start"])
                     src = _source_lang(cues) if cues else ""
                     if src and not state.source_lang:
@@ -724,6 +768,9 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     if not (isinstance(data, dict) and data.get("cues")):
                         data = _salvage_cues(out) or data
                     n = _apply_refine(part, data)
+                    if _REJECT["n"]:
+                        state.log(f"拦截 {_REJECT['n']} 句疑似编造内容，保留原转写")
+                        _REJECT["n"] = 0
                     if n < max(1, len(part) // 2) and len(part) > 4:
                         mid = len(part) // 2
                         for sub in (part[:mid], part[mid:]):
