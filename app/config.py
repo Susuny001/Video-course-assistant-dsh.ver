@@ -218,6 +218,17 @@ DEFAULT_PROVIDERS = [
         "docs": "https://openrouter.ai/keys",
     },
     {
+        "id": "pollinations",
+        "name": "Pollinations（免费，无需注册）",
+        "base_url": "https://text.pollinations.ai/openai",
+        "api_key": "unused",
+        "models": ["openai"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "完全免费、不用注册也不用 Key；匿名限制约 1 次/45 秒，只作为问答的最后兜底，不参与批量分析。",
+        "docs": "https://pollinations.ai",
+    },
+    {
         "id": "ollama",
         "name": "本地 Ollama（完全离线）",
         "base_url": "http://127.0.0.1:11434/v1",
@@ -242,6 +253,7 @@ CONCURRENCY = {
     "ollama": 2,
     "xfyun": 6,
     "deepseek": 16,
+    "pollinations": 1,
 }
 MODEL_CONCURRENCY = {
     "glm-4.7-flash": 6,
@@ -254,7 +266,34 @@ MODEL_CONCURRENCY = {
     "xophunyuanocr": 6,
     "whisper-large-v3": 4,
     "whisper-large-v3-turbo": 4,
+    "openai": 1,
 }
+
+# 长期免费模型白名单：自动轮换只在这些模型里挑，避免误用收费模型。
+# 用户在设置里显式指定的主模型/备用模型不受此表限制。
+FREE_MODELS = {
+    "zhipu": {"glm-4.7-flash", "glm-4-flash", "glm-4.6v-flash", "glm-4v-flash", "glm-4.5-flash"},
+    "xfyun": {"spark-x2.6-4b", "spark-x2.5-4b"},
+    "groq": {"whisper-large-v3", "whisper-large-v3-turbo"},
+    "pollinations": {"openai"},
+}
+
+
+def is_free_model(pid: str, model: str) -> bool:
+    return model in (FREE_MODELS.get(pid) or set())
+
+
+def _fits_role(pid: str, model: str, role: str) -> bool:
+    """自动轮换时按环节挑模型：纠错只用视觉模型，文本/问答不用视觉模型。"""
+    if not is_free_model(pid, model):
+        return False
+    low = (model or "").lower()
+    vision = "4.6v" in low or "4v" in low or "vl" in low or "vision" in low
+    if role == "refine":
+        return vision
+    if role in ("text", "chat"):
+        return not vision
+    return True
 
 
 def model_concurrency(provider: dict, model: str) -> int:
@@ -411,15 +450,17 @@ def role_candidates(role: str) -> list[tuple[dict, str]]:
     if prim:
         pool = prim.get("asr_models") if role == "asr" else prim.get("models")
         for m in pool or []:
-            add(prim, m)
+            if _fits_role(prim.get("id", ""), m, role):
+                add(prim, m)
     for p in s["providers"]:
         if p.get("id") in ("xfyun", "ollama"):
             continue  # xfyun 是 OCR 专用；本地 7B 效率低，保留接口但不自动参与
-        if role == "refine" and not p.get("vision"):
-            continue
+        if p.get("id") == "pollinations" and role != "chat":
+            continue  # 免费但限 1 次/45 秒，只给问答兜底
         pool = p.get("asr_models") if role == "asr" else p.get("models")
         for m in pool or []:
-            add(p, m)
+            if _fits_role(p.get("id", ""), m, role):
+                add(p, m)
     return out
 
 
