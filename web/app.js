@@ -657,7 +657,7 @@
     const s = state.settings;
     const out = [];
     (s.providers || []).forEach((p) => {
-      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id))) return;
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_"))) return;
       const models = (role === "asr" ? (p.asr_models?.length ? p.asr_models : p.models) : p.models) || [];
       models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || !!p.api_key }));
     });
@@ -897,7 +897,7 @@
     box.innerHTML = "";
     let shown = 0;
     state.settings.providers.forEach((p, i) => {
-      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id))) return;
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_"))) return;
       const el = document.createElement("div");
       el.className = "provider" + (shown === 0 ? " open" : "");
       el.dataset.i = i;
@@ -1818,6 +1818,14 @@
       });
       renderProviders();
       fillRoleSelects();
+      const i = state.settings.providers.length - 1;
+      const el = document.querySelector(`#providerList .provider[data-i="${i}"]`);
+      if (el) {
+        el.classList.add("open");
+        el.scrollIntoView({ block: "nearest" });
+        el.querySelector("input")?.focus();
+      }
+      toast("已添加，填 Base URL、Key、模型后点“测试连接”", "ok");
     });
     $$("[data-close]").forEach((b) => b.addEventListener("click", () => hideModal(b.dataset.close)));
     $$(".modal").forEach((m) => m.addEventListener("click", (e) => { if (e.target === m) m.classList.add("hidden"); }));
