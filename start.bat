@@ -1,5 +1,11 @@
 @echo off
 cd /d "%~dp0"
+if exist "dist\YunKeAssistant_v7.exe" (
+  taskkill /F /T /IM YunKeAssistant_v7.exe >nul 2>nul
+  taskkill /F /T /IM YunKeAssistant.exe >nul 2>nul
+  start "" "dist\YunKeAssistant_v7.exe"
+  exit /b
+)
 if exist "dist\YunKeAssistant.exe" (
   start "" "dist\YunKeAssistant.exe"
   exit /b
