@@ -16,6 +16,26 @@ from .config import model_concurrency, role_candidates
 SYSTEM_ERROR = "模型调用失败"
 
 _sems: dict[tuple[str, str], asyncio.Semaphore] = {}
+USAGE: dict[str, dict[str, int]] = {}
+DEAD: dict[str, str] = {}  # 余额不足/无权限这类错误，本次任务内不再重试
+
+
+def reset_usage() -> None:
+    USAGE.clear()
+    DEAD.clear()
+
+
+def usage_snapshot() -> dict[str, dict[str, int]]:
+    return {k: dict(v) for k, v in USAGE.items()}
+
+
+def dead_models() -> dict[str, str]:
+    return dict(DEAD)
+
+
+def _bump(key: str, field: str) -> None:
+    d = USAGE.setdefault(key, {"ok": 0, "fail": 0})
+    d[field] = d.get(field, 0) + 1
 
 
 def _sem(provider: dict, model: str) -> asyncio.Semaphore:
@@ -145,10 +165,25 @@ async def complete_role(role: str, messages: list[dict], *, cycles: int = 2,
     errs: list[str] = []
     for _cycle in range(max(1, cycles)):
         for p, m in cands:
+            key = f"{p.get('name') or p.get('id')}/{m}"
+            if key in DEAD:
+                continue
             try:
-                return await complete(p, m, messages, attempts=1, timeout=timeout, **kw)
+                out = await complete(p, m, messages, attempts=1, timeout=timeout, **kw)
+                _bump(key, "ok")
+                return out
             except Exception as e:  # noqa: BLE001
-                errs.append(f"{p['name']}/{m}: {str(e)[:90]}")
+                _bump(key, "fail")
+                msg = str(e)
+                # 只有余额/权限/模型不存在才整场跳过；429 只是临时限流，继续参与轮换
+                fatal = any(code in msg for code in ("HTTP 401", "HTTP 402",
+                                                     "HTTP 403", "HTTP 404"))
+                if fatal:
+                    DEAD[key] = msg[:120]
+                errs.append(f"{p['name']}/{m}: {msg[:90]}")
+    if not errs and DEAD:
+        raise RuntimeError("所有模型都不可用（余额/权限）：" + " | ".join(
+            f"{k}: {v[:60]}" for k, v in DEAD.items()))
     raise RuntimeError("所有模型都失败：" + " | ".join(errs[-4:]))
 
 

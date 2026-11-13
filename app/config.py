@@ -190,8 +190,8 @@ CONCURRENCY = {
 MODEL_CONCURRENCY = {
     "glm-4.7-flash": 6,
     "glm-4v-flash": 4,
-    "glm-4.5-flash": 30,
-    "glm-4-flash": 40,
+    "glm-4.5-flash": 10,
+    "glm-4-flash": 12,
     "spark-x2.6-4b": 6,
     "xoppaddleocrv16": 6,
     "xopdeepseekocr": 6,

@@ -500,6 +500,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         ref_p, ref_m = _role(opts, "refine")
         txt_p, txt_m = _role(opts, "text")
 
+        llm.reset_usage()
         db.update_job(jid, progress=1, message="读取媒体信息", log_line="开始分析")
         db.update_video(vid, status="analyzing")
 
@@ -796,9 +797,9 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         if ocr_ready:
             workers += [asyncio.create_task(ocr_worker()) for _ in range(6)]
         if not skip_refine:
-            workers += [asyncio.create_task(fix_worker()) for _ in range(8)]
+            workers += [asyncio.create_task(fix_worker()) for _ in range(16)]
             if translation_lang not in ("none", ""):
-                workers += [asyncio.create_task(tr_worker()) for _ in range(10)]
+                workers += [asyncio.create_task(tr_worker()) for _ in range(16)]
         if workers:
             await asyncio.gather(*workers)
         _check(jid)
@@ -813,6 +814,18 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         state.publish(force=True)
         db.update_job(jid, progress=82,
                       log_line=f"语种：{src_lang}，字幕 {len(all_cues)} 句，OCR 与修正已按进度完成")
+        try:
+            used = llm.usage_snapshot()
+            if used:
+                top = sorted(used.items(), key=lambda kv: -kv[1].get("ok", 0))[:6]
+                db.update_job(jid, log_line="模型调用：" + "；".join(
+                    f"{k} 成功{v.get('ok', 0)}/失败{v.get('fail', 0)}" for k, v in top))
+            dead = llm.dead_models()
+            if dead:
+                db.update_job(jid, log_line="已跳过不可用模型：" + "；".join(
+                    f"{k}（{v[:50]}）" for k, v in dead.items()))
+        except Exception:  # noqa: BLE001
+            pass
         collected_terms = state.terms
         do_translate = bool(translation_lang and translation_lang not in ("none", "")
                             and translation_lang != src_lang)
