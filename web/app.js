@@ -3,6 +3,7 @@
   "use strict";
 
   const $ = (s, r = document) => r.querySelector(s);
+  const KEYLESS_PROVIDERS = new Set(["pollinations", "llm7"]);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const api = async (url, opt = {}) => {
     const r = await fetch(url, {
@@ -656,8 +657,9 @@
     const s = state.settings;
     const out = [];
     (s.providers || []).forEach((p) => {
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id))) return;
       const models = (role === "asr" ? (p.asr_models?.length ? p.asr_models : p.models) : p.models) || [];
-      models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || !!p.api_key }));
+      models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || !!p.api_key }));
     });
     return out;
   }
@@ -893,16 +895,19 @@
   function renderProviders() {
     const box = $("#providerList");
     box.innerHTML = "";
+    let shown = 0;
     state.settings.providers.forEach((p, i) => {
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id))) return;
       const el = document.createElement("div");
-      el.className = "provider" + (i === 0 ? " open" : "");
+      el.className = "provider" + (shown === 0 ? " open" : "");
       el.dataset.i = i;
-      const on = p.id === "ollama" || !!p.api_key;
+      const keyless = KEYLESS_PROVIDERS.has(p.id);
+      const on = keyless || p.id === "ollama" || !!p.api_key;
       el.innerHTML = `
         <div class="provider-head">
           <span class="dot ${on ? "on" : ""}"></span>
           <span class="nm">${esc(p.name)}</span>
-          <span class="muted small">${p.api_key ? "已配置" : (p.id === "ollama" ? "无需 Key" : "未配置")}</span>
+          <span class="muted small">${keyless ? "无需 Key" : p.api_key ? "已配置" : (p.id === "ollama" ? "无需 Key" : "未配置")}</span>
         </div>
         <div class="provider-body">
           <label class="field"><span>名称</span><input id="name-${p.id}" data-k="name" value="${esc(p.name)}"></label>
@@ -940,6 +945,7 @@
         }
       });
       box.appendChild(el);
+      shown++;
     });
   }
 

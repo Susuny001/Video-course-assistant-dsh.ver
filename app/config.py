@@ -114,61 +114,6 @@ DEFAULT_PROVIDERS = [
         "docs": "https://open.bigmodel.cn/usercenter/apikeys",
     },
     {
-        "id": "qianfan",
-        "name": "百度千帆（有免费额度）",
-        "base_url": "https://qianfan.baidubce.com/v2",
-        "api_key": "",
-        "models": ["ernie-speed-128k", "ernie-4.5-turbo-128k", "ernie-x1-turbo-32k"],
-        "asr_models": [],
-        "vision": True,
-        "notes": "百度智能云千帆，OpenAI 兼容；新用户有免费额度，需在控制台创建 API Key。",
-        "docs": "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
-    },
-    {
-        "id": "hunyuan",
-        "name": "腾讯混元（hunyuan-lite 免费）",
-        "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
-        "api_key": "",
-        "models": ["hunyuan-turbos-latest", "hunyuan-t1-latest", "hunyuan-lite"],
-        "asr_models": [],
-        "vision": False,
-        "notes": "腾讯混元，OpenAI 兼容；hunyuan-lite 免费。",
-        "docs": "https://console.cloud.tencent.com/hunyuan/api-key",
-    },
-    {
-        "id": "ark",
-        "name": "火山方舟（豆包）",
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "api_key": "",
-        "models": ["doubao-seed-1-6-flash-250715", "doubao-seed-1-6-250615", "doubao-1-5-lite-32k-250115"],
-        "asr_models": [],
-        "vision": True,
-        "notes": "字节火山方舟，模型名也可能用推理接入点 ID，例如 ep-xxxx；按量计费。",
-        "docs": "https://console.volcengine.com/ark",
-    },
-    {
-        "id": "modelscope",
-        "name": "魔搭 ModelScope（每日免费额度）",
-        "base_url": "https://api-inference.modelscope.cn/v1",
-        "api_key": "",
-        "models": ["Qwen/Qwen2.5-72B-Instruct", "Qwen/Qwen2.5-VL-72B-Instruct", "deepseek-ai/DeepSeek-V3"],
-        "asr_models": [],
-        "vision": True,
-        "notes": "国内直连；个人中心创建访问令牌，每天有免费调用额度。",
-        "docs": "https://modelscope.cn/my/myaccesstoken",
-    },
-    {
-        "id": "nvidia",
-        "name": "NVIDIA NIM（免费额度）",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "",
-        "models": ["meta/llama-3.3-70b-instruct", "qwen/qwen2.5-72b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
-        "asr_models": [],
-        "vision": False,
-        "notes": "NVIDIA 免费 API 额度，需要能访问 integrate.api.nvidia.com。",
-        "docs": "https://build.nvidia.com/",
-    },
-    {
         "id": "xfyun",
         "name": "讯飞 MaaS（OCR 专用）",
         "base_url": "https://maas-api.cn-huabei-1.xf-yun.com/v2",
@@ -233,6 +178,17 @@ DEFAULT_PROVIDERS = [
         "docs": "https://pollinations.ai",
     },
     {
+        "id": "llm7",
+        "name": "LLM7（免费，无需注册）",
+        "base_url": "https://api.llm7.io/v1",
+        "api_key": "unused",
+        "models": ["codestral-latest"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "完全免费、不用注册也不用 Key；实测 codestral-latest 可用，作为文本兜底，不参与批量纠错。",
+        "docs": "https://llm7.io",
+    },
+    {
         "id": "ollama",
         "name": "本地 Ollama（完全离线）",
         "base_url": "http://127.0.0.1:11434/v1",
@@ -284,6 +240,7 @@ FREE_MODELS = {
     "groq": {"whisper-large-v3", "whisper-large-v3-turbo",
              "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"},
     "pollinations": {"openai"},
+    "llm7": {"codestral-latest"},
     "openrouter": {
         "openrouter/free",
         "google/gemma-4-31b-it:free",
@@ -472,8 +429,8 @@ def role_candidates(role: str) -> list[tuple[dict, str]]:
     for p in s["providers"]:
         if p.get("id") in ("xfyun", "ollama"):
             continue  # xfyun 是 OCR 专用；本地 7B 效率低，保留接口但不自动参与
-        if p.get("id") == "pollinations" and role != "chat":
-            continue  # 免费但限 1 次/45 秒，只给问答兜底
+        if p.get("id") in ("pollinations", "llm7") and role != "chat":
+            continue  # 免注册免费源限速，只给问答兜底，不参与批量纠错
         pool = p.get("asr_models") if role == "asr" else p.get("models")
         for m in pool or []:
             if _fits_role(p.get("id", ""), m, role):
