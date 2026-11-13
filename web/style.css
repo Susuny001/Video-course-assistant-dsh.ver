@@ -219,6 +219,14 @@ a{color:var(--accent)}
 .stage:fullscreen{background:var(--bg);padding:12px}
 .stage:fullscreen .controls{opacity:1;pointer-events:auto}
 .stage:fullscreen.idle .controls{opacity:1;pointer-events:auto}
+.coverage{display:flex;flex-direction:column;gap:3px;margin:0 0 7px}
+.cov-row{display:flex;align-items:center;gap:6px}
+.cov-label{font-size:10px;color:var(--muted);width:24px;flex:none;line-height:1}
+.cov-track{position:relative;flex:1;height:3px;background:#1b2740;border-radius:2px;overflow:hidden}
+.cov-fill{position:absolute;top:0;bottom:0;border-radius:2px}
+#covAsr .cov-fill{background:#4c8dff}
+#covOcr .cov-fill{background:#2fd3b0}
+#covFix .cov-fill{background:#b07cff}
 .timeline{position:relative;height:18px;cursor:pointer;margin-bottom:4px}
 .tl-segments,.tl-buffer,.tl-played,.tl-selection{position:absolute;top:5px;height:8px;border-radius:4px;overflow:hidden}
 .tl-segments{left:0;right:0;background:#1b2740}

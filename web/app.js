@@ -113,6 +113,7 @@
 
   /* ------------------------------------------------ 播放器 */
   async function openPlayer(vid) {
+    stopLive();
     const d = await api(`/api/videos/${vid}`);
     state.cur = d.video;
     state.segments = d.segments || [];
@@ -154,6 +155,97 @@
       if (video.readyState >= 1) apply();
       else video.addEventListener("loadedmetadata", apply, { once: true });
     }
+    startLive(d.job, vid);
+  }
+
+  /* ------------------------------------------------ 实时处理进度 */
+  let liveTimer = null, liveJobId = "", liveVid = "", focusSentAt = 0;
+
+  function renderCoverage(cov) {
+    if (!cov || !state.cur) return;
+    const dur = Number(cov.duration) || Number(state.cur.duration) || 0;
+    if (!dur) return;
+    const stages = [["covAsr", cov.asr], ["covOcr", cov.ocr], ["covFix", cov.fixed]];
+    stages.forEach(([id, ranges]) => {
+      const track = $("#" + id);
+      if (!track) return;
+      track.innerHTML = "";
+      (ranges || []).forEach(([a, b]) => {
+        const el = document.createElement("div");
+        el.className = "cov-fill";
+        el.style.left = Math.max(0, (a / dur) * 100) + "%";
+        el.style.width = Math.max(0.15, ((b - a) / dur) * 100) + "%";
+        track.appendChild(el);
+      });
+    });
+  }
+
+  function stopLive() {
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+    liveJobId = "";
+    liveVid = "";
+    ["covAsr", "covOcr", "covFix"].forEach((id) => { const t = $("#" + id); if (t) t.innerHTML = ""; });
+  }
+
+  async function pollLive(jobId, vid) {
+    try {
+      const j = await api(`/api/jobs/${jobId}`);
+      if (!state.cur || state.cur.id !== vid) { stopLive(); return; }
+      renderCoverage(j.coverage);
+      if (j.message) $("#pMeta").textContent = [fmtDur(state.cur.duration), j.message].filter(Boolean).join(" · ");
+      if (j.status === "running") {
+        const r = await api(`/api/videos/${vid}/cues`);
+        if (state.cur && state.cur.id === vid) {
+          const n = (r.cues || []).length;
+          if (n !== state.cues.length) {
+            state.cues = r.cues || [];
+            state.segments = r.segments || state.segments;
+            renderCueList($("#findCue")?.value || "");
+            renderSubtitle(state.activeCue);
+          }
+        }
+      } else {
+        stopLive();
+        const d = await api(`/api/videos/${vid}`);
+        if (state.cur && state.cur.id === vid) {
+          state.cues = d.cues || [];
+          state.segments = d.segments || [];
+          renderCueList($("#findCue")?.value || "");
+          renderSegments();
+          renderTimeline();
+          renderOverview(d.overview || (d.video.meta || {}).overview || {});
+          renderSubtitle(state.activeCue);
+          $("#pMeta").textContent = [fmtDur(d.video.duration), `${state.cues.length} 条字幕`].filter(Boolean).join(" · ");
+        }
+        if (j.status === "failed") toast(j.message || "分析失败", "err");
+      }
+    } catch (e) { /* 服务重启等情况，下一轮再试 */ }
+  }
+
+  function renderFullCoverage() {
+    const dur = Number(state.cur?.duration) || 0;
+    if (!dur) return;
+    renderCoverage({ duration: dur, asr: [[0, dur]], ocr: [[0, dur]], fixed: [[0, dur]] });
+  }
+
+  async function startLive(job, vid) {
+    stopLive();
+    if (job && job.status === "done") renderFullCoverage();
+    if (!job || job.status !== "running") return;
+    liveJobId = job.id;
+    liveVid = vid;
+    try { renderCoverage((await api(`/api/jobs/${job.id}`)).coverage); } catch (e) {}
+    liveTimer = setInterval(() => pollLive(job.id, vid), 2500);
+  }
+
+  function sendFocus() {
+    if (!liveJobId || !state.cur) return;
+    const now = Date.now();
+    if (now - focusSentAt < 2000) return;
+    focusSentAt = now;
+    api(`/api/videos/${state.cur.id}/focus`, {
+      method: "POST", body: { t: $("#video").currentTime || 0 },
+    }).catch(() => {});
   }
 
   function setupMedia(v) {
@@ -373,6 +465,7 @@
       state.lastPosSave = Date.now();
       api(`/api/videos/${state.cur.id}/position`, { method: "POST", body: { position: t } }).catch(() => {});
     }
+    sendFocus();
   }
 
   function seekTo(t) {
@@ -652,6 +745,7 @@
       const r = await api(`/api/videos/${state.cur.id}/analyze`, { method: "POST", body });
       $("#anProgress").classList.remove("hidden");
       pollJob(r.job.id, "modal");
+      startLive(r.job, state.cur.id);
     } catch (e) {
       toast("启动失败：" + e.message, "err");
       btn.disabled = false;
@@ -1196,6 +1290,7 @@
       flashPlay(false);
     });
     initVideoClicks();
+    video.addEventListener("seeked", sendFocus);
 
     $("#btnPlay").addEventListener("click", togglePlay);
     $("#btnBack10").addEventListener("click", () => seekTo(video.currentTime - 10));

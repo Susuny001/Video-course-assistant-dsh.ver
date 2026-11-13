@@ -240,6 +240,7 @@ def get_video(vid: str):
         "cues": db.get_cues(vid),
         "chats": db.list_chats(vid),
         "overview": (v.get("meta") or {}).get("overview") or {},
+        "job": db.one("SELECT * FROM jobs WHERE video_id=? ORDER BY created_at DESC LIMIT 1", (vid,)),
     }
 
 
@@ -306,7 +307,21 @@ def get_job(jid: str):
     j = db.get_job(jid)
     if not j:
         raise HTTPException(404, "任务不存在")
-    return j
+    return {**j, "coverage": pipeline.snapshot(jid)}
+
+
+@router.get("/videos/{vid}/cues")
+def get_cues(vid: str):
+    _video_or_404(vid)
+    return {"cues": db.get_cues(vid), "segments": db.get_segments(vid)}
+
+
+@router.post("/videos/{vid}/focus")
+def set_focus(vid: str, body: dict = Body(default={})):
+    """播放器把当前观看时间告诉后端，识别 / OCR / 修正会优先处理这一段。"""
+    _video_or_404(vid)
+    pipeline.set_focus(vid, float(body.get("t") or 0))
+    return {"ok": True}
 
 
 @router.post("/jobs/{jid}/cancel")

@@ -31,33 +31,20 @@ async def image_to_text(provider: dict, model: str, image_path: str,
 
 
 async def image_to_text_chain(provider: dict, models: list[str], image_path: str,
-                              prompt: str = OCR_PROMPT,
-                              wait_all: float = 25.0) -> tuple[str, str, str]:
-    """多个 OCR 模型同时抢答，谁先返回有效文字用谁，避免单个模型挂死拖住整批。"""
+                              prompt: str = OCR_PROMPT) -> tuple[str, str, str]:
+    """按顺序试 OCR 模型，单个最多等 8 秒，失败立刻换下一个。"""
     if not models:
         return "", "", "没有可用的 OCR 模型"
-    tasks = {asyncio.create_task(image_to_text(provider, m, image_path, prompt)): m
-             for m in models}
-    pending = set(tasks)
     errs: list[str] = []
-    deadline = asyncio.get_running_loop().time() + wait_all
-    while pending:
-        left = deadline - asyncio.get_running_loop().time()
-        if left <= 0:
-            break
-        done, pending = await asyncio.wait(pending, timeout=left,
-                                           return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            model = tasks[t]
-            try:
-                text = t.result()
-                if text:
-                    for p in pending:
-                        p.cancel()
-                    return text, model, ""
-                errs.append(f"{model}: 空结果")
-            except Exception as e:  # noqa: BLE001
-                errs.append(f"{model}: {str(e)[:60]}")
-    for p in pending:
-        p.cancel()
-    return "", "", " | ".join(errs[-3:]) or "OCR 超时"
+    for model in models:
+        try:
+            text = await asyncio.wait_for(
+                image_to_text(provider, model, image_path, prompt), timeout=8)
+            if text:
+                return text, model, ""
+            errs.append(f"{model}: 空结果")
+        except asyncio.TimeoutError:
+            errs.append(f"{model}: 超时")
+        except Exception as e:  # noqa: BLE001
+            errs.append(f"{model}: {str(e)[:60]}")
+    return "", "", " | ".join(errs[-3:])
