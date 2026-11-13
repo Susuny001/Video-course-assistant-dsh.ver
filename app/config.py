@@ -107,7 +107,7 @@ DEFAULT_PROVIDERS = [
         "name": "智谱 GLM（glm-4-flash 免费）",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "api_key": "",
-        "models": ["glm-4.7-flash", "glm-4v-flash", "glm-4-flash", "glm-4.5-air"],
+        "models": ["glm-4.7-flash", "glm-4.6v-flash", "glm-4v-flash", "glm-4-flash", "glm-4.5-air"],
         "asr_models": [],
         "vision": True,
         "notes": "glm-4-flash 与 glm-4v-flash 免费；glm-4.7-flash 用于文本和分段。",
