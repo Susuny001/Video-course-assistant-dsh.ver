@@ -610,7 +610,7 @@
     tl.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       dragging = true;
-      tl.setPointerCapture?.(e.pointerId);
+      try { tl.setPointerCapture?.(e.pointerId); } catch (err) {}
       seekFromEvent(e);
     });
     tl.addEventListener("pointermove", (e) => {
@@ -1219,7 +1219,7 @@
       const start = { x: e.clientX, y: e.clientY, vx: state.vz.x, vy: state.vz.y };
       const W = wrap.clientWidth, H = wrap.clientHeight;
       let moved = false;
-      wrap.setPointerCapture?.(e.pointerId);
+      try { wrap.setPointerCapture?.(e.pointerId); } catch (err) {}
       const move = (ev) => {
         const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
         if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
@@ -1405,7 +1405,7 @@
       box.classList.add("dragging");
       startY = e.clientY;
       startBottom = parseFloat(getComputedStyle(holder).bottom) || 16;
-      box.setPointerCapture?.(e.pointerId);
+      try { box.setPointerCapture?.(e.pointerId); } catch (err) {}
     });
     box.addEventListener("pointermove", (e) => {
       if (!dragging) return;
