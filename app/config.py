@@ -267,6 +267,9 @@ MODEL_CONCURRENCY = {
     "whisper-large-v3": 4,
     "whisper-large-v3-turbo": 4,
     "openai": 1,
+    "qwen/qwen3.8-27b": 4,
+    "openai/gpt-oss-120b": 2,
+    "openai/gpt-oss-20b": 4,
 }
 
 # 长期免费模型白名单：自动轮换只在这些模型里挑，避免误用收费模型。
@@ -274,7 +277,8 @@ MODEL_CONCURRENCY = {
 FREE_MODELS = {
     "zhipu": {"glm-4.7-flash", "glm-4-flash", "glm-4.6v-flash", "glm-4v-flash", "glm-4.5-flash"},
     "xfyun": {"spark-x2.6-4b", "spark-x2.5-4b"},
-    "groq": {"whisper-large-v3", "whisper-large-v3-turbo"},
+    "groq": {"whisper-large-v3", "whisper-large-v3-turbo",
+             "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"},
     "pollinations": {"openai"},
 }
 
