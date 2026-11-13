@@ -69,7 +69,7 @@ def samples_dir() -> Path:
 DEFAULT_PROVIDERS = [
     {
         "id": "siliconflow",
-        "name": "硅基流动 SiliconFlow（有免费模型）",
+        "name": "硅基流动 SiliconFlow（按量计费）",
         "base_url": "https://api.siliconflow.cn/v1",
         "api_key": "",
         "models": [
@@ -82,7 +82,7 @@ DEFAULT_PROVIDERS = [
         ],
         "asr_models": ["FunAudioLLM/SenseVoiceSmall"],
         "vision": True,
-        "notes": "注册后在「账号 → API 密钥」创建 Key。SenseVoiceSmall 语音识别免费，Qwen 系列有免费额度。",
+        "notes": "按量计费，需要自己填 Key；不是长期免费模型。",
         "docs": "https://cloud.siliconflow.cn/account/ak",
     },
     {
@@ -99,7 +99,7 @@ DEFAULT_PROVIDERS = [
         ],
         "asr_models": [],
         "vision": True,
-        "notes": "新用户有免费额度；qwen-vl 系列支持看图。",
+        "notes": "按量计费，需要自己填 Key；qwen-vl 系列支持看图。",
         "docs": "https://bailian.console.aliyun.com/",
     },
     {
@@ -152,9 +152,9 @@ DEFAULT_PROVIDERS = [
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "",
         "models": [
-            "qwen/qwen-2.5-vl-72b-instruct:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemini-2.0-flash-exp:free",
+            "baidu/ernie-5.5-flash-preview:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3.5-super-vl:free",
         ],
         "asr_models": [],
         "vision": True,
@@ -169,7 +169,7 @@ DEFAULT_PROVIDERS = [
         "models": ["qwen2.5:7b", "qwen2.5vl:7b", "llava:7b", "llama3.1:8b"],
         "asr_models": [],
         "vision": True,
-        "notes": "先安装 Ollama 并 `ollama pull qwen2.5vl:7b`，无需联网。",
+        "notes": "接口保留，默认不参与自动调用；需要时先 pull 模型再手动选。",
         "docs": "https://ollama.com/download",
     },
 ]
@@ -188,10 +188,10 @@ CONCURRENCY = {
     "deepseek": 16,
 }
 MODEL_CONCURRENCY = {
-    "glm-4.7-flash": 4,
+    "glm-4.7-flash": 6,
     "glm-4v-flash": 4,
-    "glm-4.5-flash": 8,
-    "glm-4-flash": 12,
+    "glm-4.5-flash": 30,
+    "glm-4-flash": 40,
     "spark-x2.6-4b": 6,
     "xoppaddleocrv16": 6,
     "xopdeepseekocr": 6,
@@ -357,8 +357,8 @@ def role_candidates(role: str) -> list[tuple[dict, str]]:
         for m in pool or []:
             add(prim, m)
     for p in s["providers"]:
-        if p.get("id") == "xfyun":
-            continue  # OCR 专用，不参与对话/纠错候选
+        if p.get("id") in ("xfyun", "ollama"):
+            continue  # xfyun 是 OCR 专用；本地 7B 效率低，保留接口但不自动参与
         if role == "refine" and not p.get("vision"):
             continue
         pool = p.get("asr_models") if role == "asr" else p.get("models")
