@@ -39,6 +39,7 @@
     loopMode: 0,
     loopCache: null,
     subDelay: 0,
+    zoom: 1,
   };
 
   const fmtTime = (s) => {
@@ -53,6 +54,24 @@
   };
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  /* 长句按标点折成最多 3 行，避免一条字幕糊满整屏 */
+  function wrapSubtitle(text, max = 42) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (t.length <= max) return t;
+    const parts = t.match(/[^。！？!?；;，,、]+[。！？!?；;，,、]?/g) || [t];
+    const lines = [];
+    let cur = "";
+    for (const p of parts) {
+      if (cur && (cur + p).length > max) { lines.push(cur); cur = p; }
+      else cur += p;
+      if (lines.length >= 3) break;
+    }
+    if (cur && lines.length < 3) lines.push(cur);
+    let out = lines.join("\n");
+    if (out.replace(/\n/g, "").length < t.length) out += "…";
+    return out;
+  }
 
   function toast(msg, kind = "") {
     const el = document.createElement("div");
@@ -467,8 +486,8 @@
     if (!c) { $("#subText").textContent = ""; $("#subTr").textContent = ""; return; }
     const mode = subMode();
     const hasTr = !!(c.translation || "").trim();
-    $("#subText").textContent = c.text || "";
-    $("#subTr").textContent = c.translation || "";
+    $("#subText").textContent = wrapSubtitle(c.text || "");
+    $("#subTr").textContent = wrapSubtitle(c.translation || "");
     // 没有译文时强制显示原文，避免选中“仅译文”后屏幕一片空白
     $("#subText").style.display = (mode === "tr" && hasTr) ? "none" : "block";
     $("#subTr").style.display = (hasTr && mode !== "src") ? "block" : "none";
@@ -587,8 +606,9 @@
       if (dur) seekTo(ratio * dur);
     };
     tl.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
       dragging = true;
-      tl.setPointerCapture(e.pointerId);
+      tl.setPointerCapture?.(e.pointerId);
       seekFromEvent(e);
     });
     tl.addEventListener("pointermove", (e) => {
@@ -616,9 +636,13 @@
           thumb.classList.remove("hidden");
         }, 220);
       }
-      if (dragging) seekFromEvent(e);
+      // 只有按住左键拖动时才跳转；单纯悬停只预览，不改变播放位置
+      if (dragging && (e.buttons & 1)) seekFromEvent(e);
     });
-    tl.addEventListener("pointerup", () => { dragging = false; });
+    const endDrag = () => { dragging = false; };
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    tl.addEventListener("lostpointercapture", endDrag);
     tl.addEventListener("pointerleave", () => {
       clearTimeout(thumbTimer);
       $("#tlTip").style.display = "none";
@@ -1113,6 +1137,35 @@
     });
   }
 
+  /* ------------------------------------------------ 缩放 */
+  const ZOOM_KEY = "yk.zoom";
+  function applyZoom(z, silent = false) {
+    z = Math.min(1.6, Math.max(0.7, Math.round(Number(z) * 100) / 100));
+    if (!isFinite(z)) z = 1;
+    state.zoom = z;
+    document.documentElement.style.zoom = String(z);
+    try { localStorage.setItem(ZOOM_KEY, String(z)); } catch (e) {}
+    if (!silent) toast(`界面缩放 ${Math.round(z * 100)}%`);
+  }
+
+  function initZoom() {
+    let z = 1;
+    try { z = Number(localStorage.getItem(ZOOM_KEY)) || 1; } catch (e) {}
+    applyZoom(z, true);
+    // 触控板双指捏合在浏览器里就是 ctrl + wheel；鼠标按住 Ctrl 滚轮同理
+    window.addEventListener("wheel", (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      applyZoom((state.zoom || 1) + (e.deltaY < 0 ? 0.05 : -0.05));
+    }, { passive: false });
+    window.addEventListener("keydown", (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (e.key === "=" || e.key === "+") { e.preventDefault(); applyZoom((state.zoom || 1) + 0.1); }
+      else if (e.key === "-") { e.preventDefault(); applyZoom((state.zoom || 1) - 0.1); }
+      else if (e.key === "0") { e.preventDefault(); applyZoom(1); }
+    });
+  }
+
   /* ------------------------------------------------ 播放器扩展 */
   const SUB_DELAY_KEY = (id) => "yk.subdelay." + id;
   const TRH_KEY = "yk.transcript_h";
@@ -1255,6 +1308,48 @@
     });
   }
 
+  function initSubtitleDrag() {
+    const box = document.querySelector("#subtitle .sub-box");
+    const wrap = $("#videoWrap");
+    if (!box || !wrap) return;
+    const holder = box.parentElement; // #subtitle
+    try {
+      const saved = Number(localStorage.getItem("yk.subbottom"));
+      if (isFinite(saved) && saved > 0) holder.style.bottom = saved + "px";
+    } catch (e) {}
+    let dragging = false, startY = 0, startBottom = 16;
+    box.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = true;
+      box.classList.add("dragging");
+      startY = e.clientY;
+      startBottom = parseFloat(getComputedStyle(holder).bottom) || 16;
+      box.setPointerCapture?.(e.pointerId);
+    });
+    box.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const h = wrap.getBoundingClientRect().height || 1;
+      const next = Math.min(h * 0.72, Math.max(8, startBottom + (startY - e.clientY)));
+      holder.style.bottom = next + "px";
+    });
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      box.classList.remove("dragging");
+      try { localStorage.setItem("yk.subbottom", parseFloat(holder.style.bottom) || 16); } catch (e) {}
+    };
+    box.addEventListener("pointerup", up);
+    box.addEventListener("pointercancel", up);
+    box.addEventListener("click", (e) => e.stopPropagation());
+    box.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      holder.style.bottom = "16px";
+      try { localStorage.removeItem("yk.subbottom"); } catch (err) {}
+    });
+  }
+
   function initPlayerExtras() {
     const video = $("#video");
 
@@ -1312,6 +1407,8 @@
     });
 
     initTranscriptPane();
+    initSubtitleDrag();
+    initZoom();
   }
 
   /* ------------------------------------------------ 布局 */
@@ -1687,6 +1784,7 @@
     document.addEventListener("keydown", (e) => {
       if ($("#view-player").classList.contains("hidden")) return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+      if (e.ctrlKey || e.metaKey) return; // Ctrl 组合交给缩放
       const k = e.key;
       if (e.code === "Space") { e.preventDefault(); togglePlay(); }
       else if (k === "ArrowLeft") seekTo(video.currentTime - 5);
