@@ -6,6 +6,7 @@ import base64
 import json
 import mimetypes
 import re
+import time
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -18,11 +19,16 @@ SYSTEM_ERROR = "模型调用失败"
 _sems: dict[tuple[str, str], asyncio.Semaphore] = {}
 USAGE: dict[str, dict[str, int]] = {}
 DEAD: dict[str, str] = {}  # 余额不足/无权限这类错误，本次任务内不再重试
+INFLIGHT: dict[str, int] = {}  # 每个模型当前在途请求数，用于把任务并行摊到所有免费模型
+COOLDOWN: dict[str, float] = {}  # 429 后的短暂冷却，避免死磕一个模型
+_rr = 0
 
 
 def reset_usage() -> None:
     USAGE.clear()
     DEAD.clear()
+    INFLIGHT.clear()
+    COOLDOWN.clear()
 
 
 def usage_snapshot() -> dict[str, dict[str, int]]:
@@ -123,7 +129,10 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
     payload.update(_reasoning_payload(provider, model, think))
 
     last_err = ""
-    for attempt in range(max(1, attempts)):
+    attempt = 0
+    limit = max(1, attempts)
+    while attempt < limit:
+        attempt += 1
         try:
             async with _sem(provider, model):
                 async with httpx.AsyncClient(timeout=timeout) as client:
@@ -137,50 +146,94 @@ async def complete(provider: dict, model: str, messages: list[dict], *,
                 # 有的模型/网关不支持 json_object 会回 200 + 空内容，去掉再试一次
                 last_err = f"HTTP 200 空内容（finish_reason={ch.get('finish_reason')}）"
                 if payload.pop("response_format", None) is not None:
+                    attempt -= 1  # 这是同一模型的兼容重试，不占用失败次数
                     continue
                 break
             last_err = f"HTTP {r.status_code}: {r.text[:400]}"
             if r.status_code == 429:
-                if attempts <= 1:
+                if attempt >= limit:
                     break
-                await asyncio.sleep(3.0 * (attempt + 1))
+                await asyncio.sleep(3.0 * attempt)
                 continue
             if r.status_code == 400 and payload.pop("response_format", None) is not None:
-                continue  # 有些服务商不支持 json_object，退回普通输出再解析
+                attempt -= 1  # 有些服务商不支持 json_object，退回普通输出再解析
+                continue
             if r.status_code in (400, 401, 403, 404):
                 break
         except Exception as e:  # noqa: BLE001
             last_err = f"{type(e).__name__}: {e}"
-        if attempts > 1:
-            await asyncio.sleep(1.2 * (attempt + 1))
+        if attempt < limit:
+            await asyncio.sleep(1.2 * attempt)
     raise RuntimeError(f"{SYSTEM_ERROR}：{last_err}")
+
+
+def _mkey(provider: dict, model: str) -> str:
+    return f"{(provider or {}).get('id', '')}/{model}"
+
+
+def _label(provider: dict, model: str) -> str:
+    return f"{(provider or {}).get('name') or (provider or {}).get('id')}/{model}"
+
+
+def _load_ratio(provider: dict, model: str) -> float:
+    cap = max(1, model_concurrency(provider, model))
+    return (INFLIGHT.get(_mkey(provider, model), 0) + 1) / cap
+
+
+def _pick_least_loaded(cands: list[tuple[dict, str]]) -> tuple[dict, str]:
+    """在所有可用免费模型里挑当前负载最低的一个；同负载时轮换。"""
+    global _rr
+    _rr += 1
+    if not cands:
+        raise RuntimeError("没有可用模型")
+    idx = _rr % len(cands)
+    rotated = cands[idx:] + cands[:idx]
+    return min(rotated, key=lambda pm: _load_ratio(pm[0], pm[1]))
 
 
 async def complete_role(role: str, messages: list[dict], *, cycles: int = 2,
                         timeout: float = 120, **kw) -> str:
-    """按角色依次尝试主模型和备用模型；单个模型失败立刻换下一个。"""
+    """免费模型并行池：每个请求都分给当前最空闲的模型，而不是全挤在第一个模型上。
+
+    同一批 16/32 个 worker 会同时落到 GLM-4-Flash、GLM-4.7-Flash、讯飞 4B、Groq Qwen/GPT-OSS 上，
+    各模型按自己的并发上限吃满；某个模型 429 时只短暂冷却，任务立刻改派给其它空闲模型。
+    """
     cands = role_candidates(role)
     if not cands:
         raise RuntimeError("没有可用模型，请到设置里配置 API Key 和模型。")
     errs: list[str] = []
     for _cycle in range(max(1, cycles)):
-        for p, m in cands:
-            key = f"{p.get('name') or p.get('id')}/{m}"
-            if key in DEAD:
-                continue
+        pool = [(p, m) for p, m in cands if _mkey(p, m) not in DEAD]
+        if not pool:
+            break
+        now = time.monotonic()
+        ready = [c for c in pool if COOLDOWN.get(_mkey(*c), 0) <= now]
+        if not ready:
+            wait = min(COOLDOWN.get(_mkey(*c), now) for c in pool) - now
+            await asyncio.sleep(max(0.2, min(3.0, wait)))
+            ready = pool
+        while ready:
+            p, m = _pick_least_loaded(ready)
+            ready.remove((p, m))
+            key = _mkey(p, m)
+            INFLIGHT[key] = INFLIGHT.get(key, 0) + 1
             try:
                 out = await complete(p, m, messages, attempts=1, timeout=timeout, **kw)
-                _bump(key, "ok")
+                _bump(_label(p, m), "ok")
                 return out
             except Exception as e:  # noqa: BLE001
-                _bump(key, "fail")
+                _bump(_label(p, m), "fail")
                 msg = str(e)
-                # 只有余额/权限/模型不存在才整场跳过；429 只是临时限流，继续参与轮换
+                # 只有余额/权限/模型不存在才整场跳过；429 只是临时限流，冷却后还能用
                 fatal = any(code in msg for code in ("HTTP 401", "HTTP 402",
                                                      "HTTP 403", "HTTP 404"))
                 if fatal:
                     DEAD[key] = msg[:120]
-                errs.append(f"{p['name']}/{m}: {msg[:90]}")
+                elif "HTTP 429" in msg:
+                    COOLDOWN[key] = time.monotonic() + 15
+                errs.append(f"{_label(p, m)}: {msg[:90]}")
+            finally:
+                INFLIGHT[key] = max(0, INFLIGHT.get(key, 0) - 1)
     if not errs and DEAD:
         raise RuntimeError("所有模型都不可用（余额/权限）：" + " | ".join(
             f"{k}: {v[:60]}" for k, v in DEAD.items()))

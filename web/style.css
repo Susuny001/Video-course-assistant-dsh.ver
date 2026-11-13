@@ -233,7 +233,10 @@ a{color:var(--accent)}
 }
 #videoWrap:fullscreen #fullTitle,
 .stage:fullscreen #fullTitle{display:block}
-#videoWrap:fullscreen #fullTitle.show,
+.zoom-badge{position:absolute;right:12px;top:46px;z-index:7;padding:3px 10px;border-radius:20px;
+  background:rgba(8,12,20,.72);border:1px solid rgba(255,255,255,.18);color:#dce8ff;font-size:11.5px;
+  cursor:pointer;backdrop-filter:blur(6px);user-select:none}
+.zoom-badge:hover{border-color:var(--accent)}#videoWrap:fullscreen #fullTitle.show,
 .stage:fullscreen #fullTitle.show{opacity:1}
 
 .controls{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px 8px;flex:none;transition:opacity .25s}

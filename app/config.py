@@ -208,8 +208,12 @@ DEFAULT_PROVIDERS = [
         "base_url": "https://openrouter.ai/api/v1",
         "api_key": "",
         "models": [
-            "baidu/ernie-5.5-flash-preview:free",
+            "openrouter/free",
             "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "baidu/ernie-5.5-flash-preview:free",
             "nvidia/nemotron-3.5-super-vl:free",
         ],
         "asr_models": [],
@@ -280,6 +284,15 @@ FREE_MODELS = {
     "groq": {"whisper-large-v3", "whisper-large-v3-turbo",
              "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"},
     "pollinations": {"openai"},
+    "openrouter": {
+        "openrouter/free",
+        "google/gemma-4-31b-it:free",
+        "google/gemma-4-26b-a4b-it:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "baidu/ernie-5.5-flash-preview:free",
+        "nvidia/nemotron-3.5-super-vl:free",
+    },
 }
 
 

@@ -40,6 +40,8 @@
     loopCache: null,
     subDelay: 0,
     zoom: 1,
+    vz: { s: 1, x: 0, y: 0 },
+    suppressClick: false,
   };
 
   const fmtTime = (s) => {
@@ -1166,6 +1168,83 @@
     });
   }
 
+  /* ------------------------------------------------ 画面局部放大 */
+  function applyVideoZoom() {
+    const video = $("#video"), badge = $("#zoomBadge");
+    const { s, x, y } = state.vz;
+    if (!video) return;
+    video.style.transformOrigin = "0 0";
+    video.style.transform = s > 1.001 ? `translate(${x}px,${y}px) scale(${s})` : "";
+    video.style.cursor = s > 1.001 ? "grab" : "";
+    if (badge) {
+      badge.classList.toggle("hidden", s <= 1.001);
+      badge.textContent = s.toFixed(1) + "× 复位";
+    }
+  }
+
+  function resetVideoZoom() {
+    state.vz = { s: 1, x: 0, y: 0 };
+    applyVideoZoom();
+  }
+
+  function zoomVideoAt(clientX, clientY, factor) {
+    const wrap = $("#videoWrap");
+    if (!wrap) return;
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    const r = wrap.getBoundingClientRect();
+    const cx = clientX - r.left, cy = clientY - r.top;
+    const cur = state.vz;
+    const s = Math.min(5, Math.max(1, cur.s * factor));
+    if (s <= 1.001) { resetVideoZoom(); return; }
+    let x = cx - (cx - cur.x) * (s / (cur.s || 1));
+    let y = cy - (cy - cur.y) * (s / (cur.s || 1));
+    x = Math.min(0, Math.max(W - W * s, x));
+    y = Math.min(0, Math.max(H - H * s, y));
+    state.vz = { s, x, y };
+    applyVideoZoom();
+  }
+
+  function initVideoZoom() {
+    const wrap = $("#videoWrap"), badge = $("#zoomBadge");
+    if (!wrap) return;
+    wrap.addEventListener("wheel", (e) => {
+      if (e.target.closest("button")) return;
+      e.preventDefault();
+      e.stopPropagation(); // 视频上的滚轮只放大画面，不再缩放整个界面
+      zoomVideoAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    }, { passive: false });
+    wrap.addEventListener("pointerdown", (e) => {
+      if (state.vz.s <= 1.001 || e.button !== 0) return;
+      if (e.target.closest("button") || e.target.closest(".sub-box") || e.target.closest(".zoom-badge")) return;
+      const start = { x: e.clientX, y: e.clientY, vx: state.vz.x, vy: state.vz.y };
+      const W = wrap.clientWidth, H = wrap.clientHeight;
+      let moved = false;
+      wrap.setPointerCapture?.(e.pointerId);
+      const move = (ev) => {
+        const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+        if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+        let x = Math.min(0, Math.max(W - W * state.vz.s, start.vx + dx));
+        let y = Math.min(0, Math.max(H - H * state.vz.s, start.vy + dy));
+        state.vz = { ...state.vz, x, y };
+        applyVideoZoom();
+      };
+      const up = () => {
+        wrap.removeEventListener("pointermove", move);
+        wrap.removeEventListener("pointerup", up);
+        if (moved) {
+          state.suppressClick = true;
+          setTimeout(() => { state.suppressClick = false; }, 350);
+        }
+      };
+      wrap.addEventListener("pointermove", move);
+      wrap.addEventListener("pointerup", up);
+    });
+    badge?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      resetVideoZoom();
+    });
+  }
+
   /* ------------------------------------------------ 播放器扩展 */
   const SUB_DELAY_KEY = (id) => "yk.subdelay." + id;
   const TRH_KEY = "yk.transcript_h";
@@ -1408,6 +1487,7 @@
 
     initTranscriptPane();
     initSubtitleDrag();
+    initVideoZoom();
     initZoom();
   }
 
