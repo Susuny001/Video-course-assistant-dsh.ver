@@ -3,6 +3,7 @@ __pycache__/
 data/
 dist/
 build/
+key/
 build_dbg/
 *.spec
 .venv/

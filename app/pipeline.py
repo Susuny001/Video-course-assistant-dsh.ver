@@ -257,6 +257,7 @@ def _asr_hint(title: str) -> str:
 
 
 _REJECT = {"n": 0}
+_DROP = {"n": 0}
 
 
 def _norm_text(s: str) -> str:
@@ -278,6 +279,219 @@ def _fidelity_ok(orig: str, new: str) -> bool:
     return overlap >= (0.6 if len(a) <= 12 else 0.45)
 
 
+def _tr_ok(src: str, tr: str) -> bool:
+    """译文基本合理性：长度不能离谱，必须是正经翻译而不是模型退化的套话。"""
+    t = (tr or "").strip()
+    if not t:
+        return False
+    n_src = len(re.findall(r"[A-Za-z0-9']+", src or ""))
+    n_tr = len(re.sub(r"\s+", "", t))
+    if n_tr > max(40, n_src * 4 + 40):
+        return False
+    if n_src >= 3 and n_tr <= 2:
+        return False
+    # 译文里冒出原文根本没有的实验类术语，是小模型背训练样例的典型症状
+    low = (src or "").lower()
+    for zh, en in _DOMAIN_WORDS:
+        if zh in t and not re.search(en, low):
+            return False
+    return True
+
+
+_DOMAIN_WORDS = (
+    ("实验", r"experiment|\blab\b|laboratory"),
+    ("溶液", r"solution|solvent"),
+    ("过氧化氢", r"peroxide"),
+    ("硫酸铜", r"sulfate|sulphate|copper"),
+    ("试剂", r"reagent|chemical"),
+    ("拉伸", r"tensile|tension|stretch|extrusion|extrude"),
+    ("材料", r"material"),
+    ("烧杯", r"beaker|flask"),
+    ("浓度", r"concentration"),
+)
+
+
+def _drop_repeated_translations(cues: list[dict]) -> int:
+    """同一句译文被套到多条不同原文上，是模型退化或批量错位的典型症状，全部清空重译。"""
+    groups: dict[str, list[dict]] = {}
+    for c in cues:
+        key = _norm_text(c.get("translation", ""))
+        if len(key) >= 6:
+            groups.setdefault(key, []).append(c)
+    n = 0
+    for group in groups.values():
+        if len(group) < 3:
+            continue
+        if len({_norm_text(c.get("text", "")) for c in group}) < 3:
+            continue
+        for c in group:
+            c["translation"] = ""
+            n += 1
+    return n
+
+
+def _similar(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _drop_echo_cues(cues: list[dict], course: str) -> tuple[list[dict], int]:
+    """Whisper 在静音段会复述提示词，产生“这些数学课…”这类成段假句。
+
+    判据：句子带课程学科词，且开头模板重复出现（≥3 次）或与已出现句子高度相似。
+    """
+    word = next((w for w in ("数学", "物理", "化学", "英语", "语文")
+                 if w in (course or "")), "")
+    if not word:
+        return cues, 0
+    from collections import Counter
+    norms = [_norm_text(c.get("text", "")) for c in cues]
+    hit = [bool(word in (c.get("text") or "")) and len(n) >= 5
+           for c, n in zip(cues, norms)]
+    # 提示词专属措辞，正常课堂不会这么说
+    ECHO_PHRASES = ("可能出现", "这是一节", "本节课程", "这节课将")
+    prefix = Counter(n[:4] for n, ok in zip(norms, hit) if ok)
+    hint_norm = _norm_text(_asr_hint(course))
+    seen: list[str] = []
+    keep: list[dict] = []
+    dropped = 0
+    for c, n, ok in zip(cues, norms, hit):
+        text = c.get("text") or ""
+        echo = (any(p in text for p in ECHO_PHRASES)
+                or (ok and (prefix[n[:4]] >= 3
+                            or any(_similar(n, s) >= 0.7 for s in seen)
+                            or (len(hint_norm) >= 10 and _similar(n, hint_norm) >= 0.45))))
+        if echo:
+            dropped += 1
+            continue
+        if ok:
+            seen.append(n)
+        keep.append(c)
+    return keep, dropped
+
+
+_NOISE_TEXT = {"谢谢", "谢谢大家", "谢谢观看", "好", "好好", "好的", "嗯", "嗯嗯",
+               "啊", "对对", "对", "是", "拜拜", "再见", "宣誓", "字幕", "请订阅"}
+
+
+def _drop_noise_cues(cues: list[dict]) -> tuple[list[dict], int]:
+    """静音/音乐段 Whisper 会吐出“谢谢”“好”这类口水词，当字幕没有意义。"""
+    keep: list[dict] = []
+    dropped = 0
+    for c in cues:
+        core = re.sub(r"[\W_]+", "", c.get("text") or "")
+        if len(core) <= 4 and (core in _NOISE_TEXT or set(core) <= set("好嗯啊哦喔呀吧")):
+            dropped += 1
+            continue
+        keep.append(c)
+    return keep, dropped
+
+
+def _split_long_cues(cues: list[dict], limit: int = 22) -> list[dict]:
+    """长句按标点切成短句，并按字数比例分配时间轴，符合主流平台单行字幕。"""
+    out: list[dict] = []
+    for c in cues:
+        text = (c.get("text") or "").strip()
+        start = float(c.get("start") or 0)
+        end = float(c.get("end") or 0)
+        # 有译文时不切，避免原文与译文错位
+        if (c.get("translation") or "").strip() or len(text) <= limit * 1.3 or end <= start:
+            out.append(c)
+            continue
+        pieces = re.split(r"(?<=[，。！？；：、,.!?;:])", text)
+        chunks: list[str] = []
+        cur = ""
+        for p in pieces:
+            if not p:
+                continue
+            if len(cur) + len(p) <= limit:
+                cur += p
+                continue
+            if cur:
+                chunks.append(cur)
+            while len(p) > limit:
+                chunks.append(p[:limit])
+                p = p[limit:]
+            cur = p
+        if cur:
+            chunks.append(cur)
+        chunks = [x.strip() for x in chunks if x.strip()]
+        if len(chunks) < 2:
+            out.append(c)
+            continue
+        total = sum(len(x) for x in chunks)
+        span = end - start
+        t0 = start
+        for ch in chunks:
+            dur = span * len(ch) / total
+            out.append({**c, "start": round(t0, 2), "end": round(t0 + dur, 2),
+                        "text": ch, "raw": ch, "translation": ""})
+            t0 += dur
+    return out
+
+
+def _drop_empty_cues(cues: list[dict]) -> tuple[list[dict], int]:
+    """切句后可能剩下只有标点的碎片，直接丢掉。"""
+    keep = [c for c in cues if re.sub(r"[\W_]+", "", c.get("text") or "")]
+    return keep, len(cues) - len(keep)
+
+
+_END_PUNCT = "。！？，；：、…,.!?;:"
+
+
+def _merge_fragments(cues: list[dict], max_len: int = 90, max_gap: float = 0.8) -> list[dict]:
+    """ASR 经常把词从中间切开（“证明”→“证”+“明”），先拼成完整句再交给修正模型。"""
+    out: list[dict] = []
+    for c in cues:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        if out:
+            prev = out[-1]
+            ptext = prev["text"]
+            gap = float(c.get("start") or 0) - float(prev["end"] or 0)
+            if (ptext and ptext[-1] not in _END_PUNCT and gap <= max_gap
+                    and len(ptext) + len(text) <= max_len):
+                prev["text"] = ptext + text
+                prev["raw"] = (prev.get("raw") or ptext) + text
+                prev["end"] = c.get("end")
+                continue
+        out.append({"start": c.get("start"), "end": c.get("end"),
+                    "text": text, "raw": c.get("raw") or text})
+    return out
+
+
+def _missing_cues(cues: list[dict], data: dict) -> list[dict]:
+    """模型经常只返回一部分 i，没返回的句子会被静默跳过，必须挑出来单独重试。"""
+    items = data.get("cues") if isinstance(data, dict) else data
+    got: set[int] = set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            got.add(int(it.get("i")))
+        except Exception:
+            continue
+    if cues and 0 not in got and 1 in got and len(got) == len(cues):
+        got = {k - 1 for k in got}
+    return [c for i, c in enumerate(cues) if i not in got]
+
+
+def _term_fix(tr: str, src: str = "") -> str:
+    """术语与机器腔的确定性修正，不依赖模型。"""
+    t = tr or ""
+    t = t.replace("原地排序", "in-place 排序").replace("原地算法", "in-place 算法")
+    if "原地" in t and re.search(r"排序|算法", (src or "") + t):
+        t = t.replace("原地", "in-place")
+    # “突出两个词汇” → “讲两个词”；“将快速突出” → “快速讲”
+    t = re.sub(r"(?:将)?(?:快速|简单|先)?突出(?:一下)?"
+               r"([两几一二三四五六七八九十\d]+)个?词汇", r"快速讲\1个词", t)
+    t = t.replace("将快速讲", "快速讲").replace("是如果", "：如果")
+    # “一个：如果你的排序是破坏性的，” → “第一，看你的排序是不是破坏性的，”
+    t = re.sub(r"一个[：:]\s*如果(.{1,24}?)是(.{1,12}?)[，,]", r"第一，看\1是不是\2，", t)
+    return t
+
+
 def _apply_refine(cues: list[dict], data: dict) -> int:
     items = data.get("cues") if isinstance(data, dict) else data
     if not isinstance(items, list):
@@ -293,11 +507,23 @@ def _apply_refine(cues: list[dict], data: dict) -> int:
     if cues and 0 not in by_i and 1 in by_i and len(by_i) == len(cues):
         by_i = {k - 1: v for k, v in by_i.items()}  # 模型从 1 开始编号时兜底
     n = 0
+    used_tr: dict[str, str] = {}
+    # 模型可以返回空 text 表示“这句是假句/无关内容，删掉”；
+    # 但如果它一口气删掉四成以上，说明是模型失效，不接受删除。
+    blanks = sum(1 for it in by_i.values()
+                 if "text" in it and not (it.get("text") or "").strip())
+    allow_drop = blanks <= max(1, len(cues) * 0.4)
     for i, c in enumerate(cues):
         it = by_i.get(i)
         if not it:
             continue
-        text = (it.get("text") or "").strip()
+        raw_text = it.get("text")
+        text = (raw_text or "").strip()
+        if "text" in it and not text and allow_drop:
+            c["text"] = ""
+            c["translation"] = ""
+            _DROP["n"] += 1
+            continue
         if text:
             if _fidelity_ok(c.get("text", ""), text):
                 c["text"] = text
@@ -307,9 +533,58 @@ def _apply_refine(cues: list[dict], data: dict) -> int:
                 _REJECT["n"] += 1
                 continue
         tr = (it.get("translation") or "").strip()
-        if tr:
-            c["translation"] = tr
+        if not tr:
+            continue
+        tr = _term_fix(tr, c.get("text", ""))
+        if not _tr_ok(c.get("text", ""), tr):
+            _REJECT["n"] += 1
+            continue
+        key, src_key = _norm_text(tr), _norm_text(c.get("text", ""))
+        if key and key in used_tr and used_tr[key] != src_key:
+            # 同一批里同一句译文对上了不同原文，说明批量错位，丢弃
+            _REJECT["n"] += 1
+            continue
+        used_tr[key] = src_key
+        c["translation"] = tr
     return n
+
+
+async def _translate_one(cue: dict, lang: str, glossary: str, course: str) -> None:
+    out = await llm.complete_role(
+        "text", prompts.translate_messages([cue], lang, glossary, course),
+        think=False, temperature=0.2, json_mode=True, max_tokens=1200)
+    data = llm.parse_json_loose(out)
+    if not (isinstance(data, dict) and data.get("cues")):
+        data = _salvage_cues(out) or data
+    _apply_refine([cue], data)
+
+
+async def _translate_cues(cues: list[dict], lang: str, glossary: str,
+                          course: str, size: int = 6) -> None:
+    """小批量翻译：模型吞句/串行会让整批译文错位，必须校验条数，对不上就逐句重译。"""
+    for i in range(0, len(cues), size):
+        part = cues[i:i + size]
+        try:
+            out = await llm.complete_role(
+                "text", prompts.translate_messages(part, lang, glossary, course),
+                think=False, temperature=0.2, json_mode=True,
+                max_tokens=min(4000, 220 * len(part) + 400))
+            data = llm.parse_json_loose(out)
+            if not (isinstance(data, dict) and data.get("cues")):
+                data = _salvage_cues(out) or data
+            items = data.get("cues") if isinstance(data, dict) else data
+            if not isinstance(items, list) or len(items) != len(part):
+                for c in part:
+                    await _translate_one(c, lang, glossary, course)
+                continue
+            _apply_refine(part, {"cues": items})
+            for c in part:
+                if not (c.get("translation") or "").strip():
+                    await _translate_one(c, lang, glossary, course)
+        except Canceled:
+            raise
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _gen_cover(title: str, out: Path) -> str | None:
@@ -522,6 +797,171 @@ class _Live:
         }
 
 
+async def _polish_cues(cues: list[dict], lang: str, course: str, size: int = 8) -> None:
+    """二次审校：只改中文，修机器腔和逐词直译。"""
+    for i in range(0, len(cues), size):
+        part = cues[i:i + size]
+        try:
+            out = await llm.complete_role(
+                "text", prompts.polish_messages(part, lang, course),
+                think=False, temperature=0.2, json_mode=True,
+                max_tokens=min(4000, 200 * len(part) + 400))
+            data = llm.parse_json_loose(out)
+            items = data.get("cues") if isinstance(data, dict) else data
+            if not isinstance(items, list) or len(items) != len(part):
+                continue
+            by_i: dict[int, str] = {}
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                try:
+                    by_i[int(it.get("i"))] = (it.get("translation") or "").strip()
+                except Exception:
+                    continue
+            for k, c in enumerate(part):
+                tr = by_i.get(k, "")
+                if not tr or tr == (c.get("translation") or "").strip():
+                    continue
+                if _tr_ok(c.get("text", ""), tr):
+                    c["translation"] = _term_fix(tr, c.get("text", ""))
+        except Canceled:
+            raise
+        except Exception:  # noqa: BLE001
+            continue
+
+
+async def retranslate(vid: str, jid: str, mode: str = "missing") -> None:
+    """重新翻译已有字幕：mode=missing 只补空译文，all 整讲重译。"""
+    v = db.get_video(vid) or {}
+    lang = (load_settings().get("ui") or {}).get("translation_lang") or "zh"
+    cues = db.get_cues(vid)
+    if not cues:
+        db.update_job(jid, progress=100, message="没有字幕", status="done",
+                      log_line="没有可翻译的字幕")
+        return
+    if mode == "all":
+        for c in cues:
+            c["translation"] = ""
+    if mode == "polish":
+        todo = [c for c in cues if (c.get("translation") or "").strip()]
+        db.update_job(jid, progress=2, message=f"审校 {len(todo)} 句译文",
+                      log_line=f"开始审校译文：{len(todo)} 句")
+        sem = asyncio.Semaphore(8)
+
+        async def one_polish(part: list[dict]) -> None:
+            async with sem:
+                await _polish_cues(part, lang, v.get("title") or "")
+
+        try:
+            await asyncio.gather(*[one_polish(todo[i:i + 8])
+                                   for i in range(0, len(todo), 8)])
+            db.replace_cues(vid, cues)
+        except Exception as e:  # noqa: BLE001
+            db.update_job(jid, status="failed", message="审校失败",
+                          log_line=f"审校失败：{str(e)[:100]}")
+            return
+        db.update_job(jid, progress=100, message="译文审校完成", status="done",
+                      log_line="译文审校完成")
+        return
+    todo = [c for c in cues if not (c.get("translation") or "").strip()]
+    db.update_job(jid, progress=2, message=f"重译 {len(todo)} 句",
+                  log_line=f"开始重译：{len(todo)} 句（模式 {mode}）")
+    sem = asyncio.Semaphore(12)
+
+    async def one(part: list[dict]) -> None:
+        async with sem:
+            try:
+                await _translate_cues(part, lang, "", v.get("title") or "")
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        await asyncio.gather(*[one(todo[i:i + 6]) for i in range(0, len(todo), 6)])
+        db.replace_cues(vid, cues)
+    except Exception as e:  # noqa: BLE001
+        db.update_job(jid, status="failed", message="重译失败",
+                      log_line=f"重译失败：{str(e)[:100]}")
+        return
+    left = sum(1 for c in cues if not (c.get("translation") or "").strip())
+    db.update_job(jid, progress=100, message="重译完成", status="done",
+                  log_line=f"重译完成，剩余空译文 {left} 句")
+
+
+async def reasr(vid: str, jid: str, opts: dict | None = None) -> None:
+    """重新做语音识别：按 5 分钟切片重跑 ASR，重建字幕，并可选自动重译。"""
+    opts = opts or {}
+    v = db.get_video(vid) or {}
+    ui = load_settings().get("ui") or {}
+    dur = float(v.get("duration") or 0)
+    vdir = video_dir(vid)
+    audio = vdir / "audio.mp3"
+    chunk_sec = float(opts.get("chunk_seconds") or ui.get("asr_chunk_seconds") or 300)
+    db.update_job(jid, progress=2, message="准备音轨", log_line="重新识别：准备音轨")
+    try:
+        if not audio.exists():
+            await asyncio.to_thread(media.extract_audio, v["path"], str(audio))
+        asr_p, asr_m = _role(opts, "asr")
+    except Exception as e:  # noqa: BLE001
+        db.update_job(jid, status="failed", message="重新识别失败",
+                      log_line=f"重新识别失败：{str(e)[:100]}")
+        return
+
+    chunks = _chunks(dur, chunk_sec)
+    db.update_job(jid, progress=5, message=f"重新识别 {len(chunks)} 段",
+                  log_line=f"重新识别：共 {len(chunks)} 段")
+    results: list[dict] = []
+    done = {"n": 0}
+    lock = asyncio.Lock()
+    sem = asyncio.Semaphore(4)
+
+    async def one(idx: int, cs: float, cl: float) -> None:
+        async with sem:
+            part = vdir / "chunks" / f"rea_{idx:04d}.mp3"
+            part.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                await asyncio.to_thread(media.slice_audio, str(audio), cs, cl, str(part))
+                res = await asr.transcribe(asr_p, asr_m, str(part),
+                                           language=ui.get("subtitle_lang") or "",
+                                           duration=cl, prompt="")
+                cues = []
+                for sg in _merge_asr_segments(res["segments"]):
+                    t = (sg.get("text") or "").strip()
+                    if t:
+                        cues.append({"start": round(cs + float(sg["start"]), 2),
+                                     "end": round(cs + float(sg["end"]), 2),
+                                     "raw": t, "text": t, "translation": ""})
+            except Exception as e:  # noqa: BLE001
+                db.update_job(jid, log_line=f"第 {idx + 1} 段失败：{str(e)[:80]}")
+                cues = []
+            async with lock:
+                results.extend(cues)
+                done["n"] += 1
+                db.update_job(jid, progress=5 + 80 * done["n"] / max(1, len(chunks)),
+                              message=f"重新识别 {done['n']}/{len(chunks)} 段")
+
+    await asyncio.gather(*[one(i, cs, cl) for i, (cs, cl) in enumerate(chunks)])
+
+    cues = sorted(results, key=lambda c: c["start"])
+    src = _source_lang(cues)
+    cues = [c for c in cues if not _is_bad_cue(c["text"], src or "unknown")]
+    cues = _merge_fragments(cues)
+    if not cues:
+        db.update_job(jid, status="failed", message="没有识别出字幕",
+                      log_line="重新识别失败：没有识别出字幕")
+        return
+    db.replace_cues(vid, cues)
+    db.update_video(vid, meta={**(v.get("meta") or {}), "source_lang": src})
+    db.update_job(jid, progress=88, message="重新识别完成",
+                  log_line=f"重新识别完成：{len(cues)} 句，语种 {src}")
+
+    lang = ui.get("translation_lang") or "zh"
+    if lang not in ("none", "") and lang != src:
+        await _translate_cues(cues, lang, "", v.get("title") or "")
+        db.replace_cues(vid, cues)
+    db.update_job(jid, progress=100, message="重新识别完成", status="done",
+                  log_line="重新识别与翻译已完成")
+
+
 async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
     opts = opts or {}
     v = db.get_video(vid)
@@ -542,7 +982,8 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         skip_refine = bool(opts.get("skip_refine"))
         course = v["title"]
         hint = _asr_hint(course)
-        asr_prompt = (course + "。" + hint)[:800] if hint else course[:800]
+        # 中文提示词会被 Whisper 在静音段原样复述（“这是一节数学课…”），只在英文课保留提示
+        asr_prompt = hint if hint.startswith("This is") else ""
 
         asr_p, asr_m = _role(opts, "asr")
         ref_p, ref_m = _role(opts, "refine")
@@ -671,6 +1112,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     if src and not state.source_lang:
                         state.source_lang = src
                     cues = [c for c in cues if not _is_bad_cue(c["text"], src or "unknown")]
+                    cues = _merge_fragments(cues)
                     state.add_cues(cues)
                     state.make_batches(cues, batch_size, skip_fix=skip_refine)
                     state.asr_done.append((u["start"], u["end"]))
@@ -728,14 +1170,16 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
 
         async def fix_worker() -> None:
             while True:
+                # 必须等 ASR 全部结束：否则尾部语音还没出来、队列瞬时为空时会提前退出，
+                # 视频最后十几分钟就永远不进入修正（曾导致结尾大段错字没人改）
                 if not state.gates_ok():
-                    if state.ocr_all_done():
+                    if state.ocr_all_done() and state.asr_all_done():
                         return
                     await asyncio.sleep(0.3)
                     continue
                 u = _pick(state.fix_units, state.focus)
                 if u is None:
-                    if state.ocr_all_done():
+                    if state.ocr_all_done() and state.asr_all_done():
                         return
                     await asyncio.sleep(0.2)
                     continue
@@ -753,7 +1197,8 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                         bdur = max(1.0, part[-1]["end"] - part[0]["start"])
                         frames = await asyncio.to_thread(
                             _frames_for, v, vdir, part[0]["start"], bdur, 1)
-                    role = "text" if (screen or not frames) else "refine"
+                    # 纠错固定走视觉模型：纯文本 glm-4-flash 遇到碎句会背术语表
+                    role = "refine"
                     msgs = prompts.refine_messages(
                         part, glossary=glossary, term_policy=term_policy,
                         translation_lang="none",
@@ -768,9 +1213,35 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     if not (isinstance(data, dict) and data.get("cues")):
                         data = _salvage_cues(out) or data
                     n = _apply_refine(part, data)
+                    # 模型少返回的句子必须逐句补，否则会原样留着 ASR 错字
+                    miss = _missing_cues(part, data)
+                    if miss:
+                        state.log(f"{len(miss)} 句未返回，逐句重试")
+                        for mc in miss:
+                            try:
+                                m1 = prompts.refine_messages(
+                                    [mc], glossary=glossary, term_policy=term_policy,
+                                    translation_lang="none",
+                                    context_before=state.ctx_before(u, 4),
+                                    context_after=state.ctx_after(u, 2),
+                                    frames=frames, screen_text=screen, course=course)
+                                o1 = await llm.complete_role(
+                                    role, m1, think=False, temperature=0.2,
+                                    json_mode=True, max_tokens=1500)
+                                d1 = llm.parse_json_loose(o1)
+                                if not (isinstance(d1, dict) and d1.get("cues")):
+                                    d1 = _salvage_cues(o1) or d1
+                                _apply_refine([mc], d1)
+                            except Canceled:
+                                raise
+                            except Exception:  # noqa: BLE001
+                                continue
                     if _REJECT["n"]:
                         state.log(f"拦截 {_REJECT['n']} 句疑似编造内容，保留原转写")
                         _REJECT["n"] = 0
+                    if _DROP["n"]:
+                        state.log(f"删除 {_DROP['n']} 句假句/无关内容")
+                        _DROP["n"] = 0
                     if n < max(1, len(part) // 2) and len(part) > 4:
                         mid = len(part) // 2
                         for sub in (part[:mid], part[mid:]):
@@ -780,7 +1251,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                                     translation_lang="none",
                                     frames=frames, screen_text=screen, course=course)
                                 o2 = await llm.complete_role(
-                                    "text" if screen else role, m2, think=False,
+                                    role, m2, think=False,
                                     temperature=0.2, json_mode=True,
                                     max_tokens=min(6000, 160 * len(sub) + 800))
                                 d2 = llm.parse_json_loose(o2)
@@ -789,8 +1260,11 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                                 _apply_refine(sub, d2)
                             except Exception:  # noqa: BLE001
                                 pass
+                    part_text = "".join(texts_before) + (screen or "")
                     for t in (data.get("terms") or []) if isinstance(data, dict) else []:
-                        if isinstance(t, str) and t not in state.terms:
+                        # 术语必须真的出现在这节课里，否则就是模型夹带的无关内容
+                        if (isinstance(t, str) and t.strip() and t.strip() in part_text
+                                and t not in state.terms):
                             state.terms.append(t)
                     # 逐句防串语言：英文原句被模型写成中文时，把中文当译文、原文还原
                     fixed_lang = 0
@@ -829,15 +1303,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                 u["status"] = "running"
                 _check(jid)
                 try:
-                    to = await llm.complete_role(
-                        "text",
-                        prompts.translate_messages(u["cues"], translation_lang, glossary, course),
-                        think=False, temperature=0.2, json_mode=True,
-                        max_tokens=min(8000, 160 * len(u["cues"]) + 600))
-                    dtr = llm.parse_json_loose(to)
-                    if not (isinstance(dtr, dict) and dtr.get("cues")):
-                        dtr = _salvage_cues(to) or dtr
-                    _apply_refine(u["cues"], dtr)
+                    await _translate_cues(u["cues"], translation_lang, glossary, course)
                 except Canceled:
                     raise
                 except Exception as e:  # noqa: BLE001
@@ -869,6 +1335,17 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
         _check(jid)
 
         all_cues = state.ordered_cues()
+        all_cues, echo_n = _drop_echo_cues(all_cues, course)
+        if echo_n:
+            db.update_job(jid, log_line=f"清除 {echo_n} 句静音段回声幻觉（模型复述提示词）")
+        all_cues, noise_n = _drop_noise_cues(all_cues)
+        if noise_n:
+            db.update_job(jid, log_line=f"清除 {noise_n} 句静音段口水词")
+        before_split = len(all_cues)
+        all_cues = _split_long_cues(all_cues)
+        all_cues, empty_n = _drop_empty_cues(all_cues)
+        if len(all_cues) != before_split:
+            db.update_job(jid, log_line=f"长句已切分为 {len(all_cues)} 条单行字幕")
         if not all_cues:
             raise RuntimeError("没有识别出任何字幕，请检查语音模型，或改用已有字幕重试。")
         src_lang = state.source_lang or _source_lang(all_cues)
@@ -898,6 +1375,9 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
 
         # 收尾补翻：个别批次的翻译没返回时，把空译文再补一遍
         if do_translate:
+            dropped = _drop_repeated_translations(all_cues)
+            if dropped:
+                db.update_job(jid, log_line=f"发现 {dropped} 句译文重复套用，已清空重译")
             missing = [c for c in all_cues if not (c.get("translation") or "").strip()]
             if missing:
                 db.update_job(jid, progress=83,
@@ -908,15 +1388,7 @@ async def analyze(vid: str, jid: str, opts: dict | None = None) -> None:
                     async with sem_fill:
                         _check(jid)
                         try:
-                            to = await llm.complete_role(
-                                "text",
-                                prompts.translate_messages(part, translation_lang, glossary, course),
-                                think=False, temperature=0.2, json_mode=True,
-                                max_tokens=min(8000, 160 * len(part) + 600))
-                            dtr = llm.parse_json_loose(to)
-                            if not (isinstance(dtr, dict) and dtr.get("cues")):
-                                dtr = _salvage_cues(to) or dtr
-                            _apply_refine(part, dtr)
+                            await _translate_cues(part, translation_lang, glossary, course)
                         except Canceled:
                             raise
                         except Exception as e:  # noqa: BLE001

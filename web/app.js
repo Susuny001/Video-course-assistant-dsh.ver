@@ -4,6 +4,8 @@
 
   const $ = (s, r = document) => r.querySelector(s);
   const KEYLESS_PROVIDERS = new Set(["pollinations", "llm7"]);
+  // 早期版本留下的空壳服务商，接口早已不可用，不再展示
+  const HIDDEN_PROVIDERS = new Set(["qianfan", "hunyuan", "ark", "modelscope", "nvidia"]);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const api = async (url, opt = {}) => {
     const r = await fetch(url, {
@@ -219,6 +221,29 @@
     liveJobId = "";
     liveVid = "";
     ["covAsr", "covOcr", "covFix"].forEach((id) => { const t = $("#" + id); if (t) t.innerHTML = ""; });
+  }
+
+  async function pollTranslate(jobId, vid) {
+    for (let i = 0; i < 1200; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (!state.cur || state.cur.id !== vid) return;
+      let j;
+      try { j = await api(`/api/jobs/${jobId}`); } catch (e) { return; }
+      const bar = $("#jobBar");
+      if (bar) {
+        bar.classList.remove("hidden");
+        $("#jobFill").style.width = Math.round(j.progress || 0) + "%";
+        $("#jobText").textContent = `${j.message || "重译中"} ${Math.round(j.progress || 0)}%`;
+      }
+      if (j.status !== "running") {
+        const r = await api(`/api/videos/${vid}/cues`);
+        state.cues = r.cues || [];
+        renderCueList($("#findCue")?.value || "");
+        if (bar) bar.classList.add("hidden");
+        toast(j.status === "done" ? "译文已更新" : "重译未完成", j.status === "done" ? "ok" : "err");
+        return;
+      }
+    }
   }
 
   async function pollLive(jobId, vid) {
@@ -657,9 +682,18 @@
     const s = state.settings;
     const out = [];
     (s.providers || []).forEach((p) => {
-      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_"))) return;
-      const models = (role === "asr" ? (p.asr_models?.length ? p.asr_models : p.models) : p.models) || [];
-      models.forEach((m) => out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || !!p.api_key }));
+      if (HIDDEN_PROVIDERS.has(p.id)) return;
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_") || (p.models || []).length)) return;
+      const models = role === "asr" ? (p.asr_models || []) : (p.models || []);
+      models.forEach((m) => {
+        const low = (m || "").toLowerCase();
+        const vision = /4\.6v|4v|vl|vision|llava/.test(low);
+        const ocr = /paddleocr|deepseekocr|hunyuanocr/.test(low);
+        if (role === "asr" && !/whisper|sensevoice|paraformer/.test(low)) return;
+        if (role === "refine" && (!vision || ocr)) return;
+        if ((role === "text" || role === "chat") && (vision || ocr)) return;
+        out.push({ pid: p.id, pname: p.name, model: m, ready: p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || !!p.api_key });
+      });
     });
     return out;
   }
@@ -897,7 +931,8 @@
     box.innerHTML = "";
     let shown = 0;
     state.settings.providers.forEach((p, i) => {
-      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_"))) return;
+      if (HIDDEN_PROVIDERS.has(p.id)) return;
+      if (!(p.api_key || p.id === "ollama" || KEYLESS_PROVIDERS.has(p.id) || p.id.startsWith("custom_") || (p.models || []).length)) return;
       const el = document.createElement("div");
       el.className = "provider" + (shown === 0 ? " open" : "");
       el.dataset.i = i;
@@ -1804,6 +1839,44 @@
     $("#btnExport").addEventListener("click", () => {
       if (state.cur) window.open(`/api/videos/${state.cur.id}/export?fmt=srt`, "_blank");
     });
+    $("#btnRetranslate").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $("#retranslateMenu").classList.toggle("open");
+      $("#reasrMenu").classList.remove("open");
+    });
+    $$("#retranslateMenu button").forEach((b) => b.addEventListener("click", async () => {
+      $("#retranslateMenu").classList.remove("open");
+      if (!state.cur) return;
+      const mode = b.dataset.mode;
+      if (mode === "all" && !confirm("整讲重译会覆盖现有译文，确定继续？")) return;
+      try {
+        const r = await api(`/api/videos/${state.cur.id}/translate`,
+          { method: "POST", body: { mode } });
+        toast(mode === "all" ? "已开始整讲重译"
+          : mode === "polish" ? "已开始润色译文" : "已开始补齐缺失译文", "ok");
+        pollTranslate(r.job, state.cur.id);
+      } catch (err) {
+        toast("重译失败：" + err.message, "err");
+      }
+    }));
+    $("#btnReasr").addEventListener("click", (e) => {
+      e.stopPropagation();
+      $("#reasrMenu").classList.toggle("open");
+      $("#retranslateMenu").classList.remove("open");
+    });
+    $$("#reasrMenu button").forEach((b) => b.addEventListener("click", async () => {
+      $("#reasrMenu").classList.remove("open");
+      if (!state.cur) return;
+      if (!confirm("重新识别会重建整讲字幕，现有字幕和译文会被覆盖，确定继续？")) return;
+      try {
+        const r = await api(`/api/videos/${state.cur.id}/asr`,
+          { method: "POST", body: { mode: b.dataset.mode } });
+        toast("已开始重新识别语音", "ok");
+        pollTranslate(r.job, state.cur.id);
+      } catch (err) {
+        toast("重新识别失败：" + err.message, "err");
+      }
+    }));
 
     $("#btnSettings").addEventListener("click", () => {
       renderProviders(); fillRoleSelects(); fillUiFields();

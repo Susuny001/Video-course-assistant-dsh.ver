@@ -302,6 +302,27 @@ async def analyze(vid: str, opts: dict = Body(default={})):
     return {"ok": True, "job": job}
 
 
+@router.post("/videos/{vid}/asr")
+async def reasr_video(vid: str, body: dict = Body(default={})):
+    """重新做语音识别，重建字幕；有译文语言时会顺带重译。"""
+    _video_or_404(vid)
+    job = db.create_job(vid, kind="asr")
+    _bg(pipeline.reasr(vid, job, body or {}))
+    return {"ok": True, "job": job}
+
+
+@router.post("/videos/{vid}/translate")
+async def translate_video(vid: str, body: dict = Body(default={})):
+    """重新翻译已有字幕：mode=missing 只补空白，all 整讲重译，polish 审校润色。"""
+    _video_or_404(vid)
+    mode = (body or {}).get("mode") or "missing"
+    if mode not in ("missing", "all", "polish"):
+        mode = "missing"
+    job = db.create_job(vid, kind="translate")
+    _bg(pipeline.retranslate(vid, job, mode))
+    return {"ok": True, "job": job}
+
+
 @router.get("/jobs/{jid}")
 def get_job(jid: str):
     j = db.get_job(jid)

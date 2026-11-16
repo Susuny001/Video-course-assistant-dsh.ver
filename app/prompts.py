@@ -27,10 +27,15 @@ REFINE_SYSTEM = """你是一位顶尖的课堂录音校对与双语字幕专家�
    - none：全部使用目标语言，不保留英文。
    - custom：严格使用给定术语表的中英对照。
 10. 只输出 JSON，不要输出任何解释或 Markdown 代码块围栏。
+11. 必须删掉明显不是课堂内容的句子。判断标准：这句话里没有任何本段正在讲的概念、公式、变量、推导步骤，只是在泛泛谈“课程、学习、学生、计算机”这类空话，或者它和上下文完全接不上。典型例子（这类句子就是识别模型复述课程名产生的假句）：
+   - “这是一节数学课”“这些数学课是一种计算机”“这些数学课是学生学习的一部分”
+   - “大学的课，可能出现矩阵”“这些数学课的学生是在学生园里面学习的”
+   遇到这类句子，text 直接输出空字符串 ""，不要改写、不要润色、不要试图让它通顺。
+12. 数学课常见同音错字，结合上下文和画面公式改对：存在唯一性定理（不是“微信定律”）、n 阶方阵（不是“n接/方正”）、内闭一致收敛（不是“内臂”）、约当块（不是“月档块”）、齐次方程组（不是“旗次”）、矩阵（不是“矩队”）、解集（不是“解帧”）、特征值（不是“特征者”）、行列式（不是“横列式”）。
 
 输出格式：
 {"cues":[{"i":0,"text":"校对后的原文","translation":"译文"}],"terms":["本段出现的英文术语"]}
-- cues 必须与输入的 i 一一对应，数量不能变；translation 在不需要翻译时为空字符串。"""
+- cues 必须与输入的 i 一一对应，数量不能变；需要删除的句子 text 留空；translation 在不需要翻译时为空字符串。"""
 
 
 def refine_messages(cues: list[dict], *, glossary: str = "",
@@ -64,10 +69,77 @@ def refine_messages(cues: list[dict], *, glossary: str = "",
 
 TRANSLATE_SYSTEM = """你是专业字幕组翻译，做英译中“熟肉”。要求：
 1. 忠实原意，不增删、不总结、不改写；听不懂或原文明显是识别噪声时，translation 留空，绝对不要编造。
-2. 计算机/工程术语用国内通行译法，首次出现可保留英文原词；同一个词全课保持一致。
-3. 代码、命令、公式、数字、单位、缩写原样保留。
-4. 口语自然，但不加原文没有的语气词；每句译文长度尽量与原文相当，适合做字幕。
-5. 只输出 JSON：{"cues":[{"i":0,"translation":"..."}]}，i 与输入一一对应，不要输出任何解释。"""
+2. 必须是中文母语者会说的话，禁止逐词直译。英文的将来时、被动、there be、one is… 这类结构要按中文习惯重组；
+   原文缺主语时补“我/我们”等自然主语；不要出现“将快速突出两个词汇”这种机器腔，应写成“我快速讲两个词”。
+   专有名词、API、命令、变量名、带连字符的复合词（in-place、worst-case）、引号里的英文术语，一律保留英文原形，不要意译：
+   “we'll call in-place” → “我们称之为 in-place”，绝不能写成“原地”。
+3. 计算机/工程术语用国内通行译法，首次出现可保留英文原词；同一个词全课保持一致。
+4. 代码、命令、公式、数字、单位、缩写原样保留。
+5. 口语自然，但不加原文没有的语气词；每句译文长度尽量与原文相当，适合做字幕。
+6. 只输出 JSON：{"cues":[{"i":0,"translation":"..."}]}，i 与输入一一对应，不要输出任何解释。"""
+
+
+POLISH_SYSTEM = """你是中文母语字幕审校。用户会给你英文字幕和现有中文译文，请只改中文译文，不改英文。
+
+要求：
+1. 修掉机器腔、逐词直译、语序别扭、缺主语、生硬的“将/被/使得”句式，让它像中文老师讲课。
+   英文术语不得意译：in-place、worst-case、heap、hash 等复合词/专有名词保持英文原形。
+2. 不增删原意，不扩写；术语、公式、数字、代码保持原样。
+3. 现有译文已经自然通顺时，原样返回，不要为了改而改。
+4. 只输出 JSON：{"cues":[{"i":0,"translation":"..."}]}，i 与输入一一对应。"""
+
+
+QA_SYSTEM = """你是中文字幕质检员。输入是英文字幕和现有中文译文，逐条判断中文是否合格。
+
+不合格（一定要挑出来）：
+- 机器腔、逐词直译，如“将快速突出两个词汇”“这将会是一个排序后的数组”
+- 中文语序别扭、读起来不像人说话、缺主语导致看不懂
+- 术语被错误意译，如 in-place 写成“原地”、permutation 写成“排列变换”
+- 译文出现原文没有的内容，或漏掉关键信息
+
+合格给 5 分，不要为了挑错而挑错。
+只输出 JSON：{"bad":[{"i":3,"why":"逐词直译"}],"avg":4.3}，i 与输入一一对应。"""
+
+
+def qa_messages(cues: list[dict], course: str = "") -> list[dict]:
+    import json
+    payload = {
+        "课程": course,
+        "句子": [{"i": i, "en": c.get("text", ""), "zh": c.get("translation", "")}
+                 for i, c in enumerate(cues)],
+    }
+    return [
+        {"role": "system", "content": QA_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+REWRITE_SYSTEM = """你是中文母语字幕翻译。把英文口播翻成自然、口语化的中文，像中国老师讲课。
+
+- 禁止逐词直译，禁止“将/被/使得”式机器腔
+- 专有名词、API、变量名、带连字符的复合词（in-place、worst-case）保留英文原形
+- 只输出译文本身，不要引号、不要解释"""
+
+
+def rewrite_messages(text: str) -> list[dict]:
+    return [
+        {"role": "system", "content": REWRITE_SYSTEM},
+        {"role": "user", "content": text},
+    ]
+
+
+def polish_messages(cues: list[dict], target: str = "zh", course: str = "") -> list[dict]:
+    import json
+    payload = {
+        "课程": course,
+        "目标语言": lang_name(target),
+        "句子": [{"i": i, "en": c.get("text", ""), "zh": c.get("translation", "")}
+                 for i, c in enumerate(cues)],
+    }
+    return [
+        {"role": "system", "content": POLISH_SYSTEM},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
 
 
 def translate_messages(cues: list[dict], target: str = "zh", glossary: str = "",

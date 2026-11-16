@@ -199,6 +199,97 @@ DEFAULT_PROVIDERS = [
         "notes": "接口保留，默认不参与自动调用；需要时先 pull 模型再手动选。",
         "docs": "https://ollama.com/download",
     },
+    {
+        "id": "cerebras",
+        "name": "Cerebras（免费额度，速度极快）",
+        "base_url": "https://api.cerebras.ai/v1",
+        "api_key": "",
+        "models": ["llama-3.3-70b", "llama-4-scout-17b-16e-instruct", "qwen-3-32b"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "注册即送免费额度，推理速度非常快，适合批量纠错和翻译；端点已实测存活。",
+        "docs": "https://cloud.cerebras.ai/",
+    },
+    {
+        "id": "mistral",
+        "name": "Mistral 官方（免费 Experiment 额度）",
+        "base_url": "https://api.mistral.ai/v1",
+        "api_key": "",
+        "models": ["mistral-small-latest", "open-mistral-nemo", "mistral-large-latest"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "免费 Experiment 套餐够日常翻译/分段用；端点已实测存活。",
+        "docs": "https://console.mistral.ai/api-keys",
+    },
+    {
+        "id": "sambanova",
+        "name": "SambaNova（免费额度）",
+        "base_url": "https://api.sambanova.ai/v1",
+        "api_key": "",
+        "models": ["Meta-Llama-3.3-70B-Instruct", "gpt-oss-120b", "GLM-5.3"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "免费额度较大，模型列表已实测可公开读取。",
+        "docs": "https://cloud.sambanova.ai/apis",
+    },
+    {
+        "id": "huggingface",
+        "name": "Hugging Face Router（每月免费额度）",
+        "base_url": "https://router.huggingface.co/v1",
+        "api_key": "",
+        "models": ["meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3.8-27B",
+                   "deepseek-ai/DeepSeek-V4.1-Flash"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "用 HF Token 调用，每月有免费推理额度；模型 ID 已从端点实读。",
+        "docs": "https://huggingface.co/settings/tokens",
+    },
+    {
+        "id": "chutes",
+        "name": "Chutes（免费额度）",
+        "base_url": "https://llm.chutes.ai/v1",
+        "api_key": "",
+        "models": ["deepseek-ai/DeepSeek-V3.2-TEE", "Qwen/Qwen3.8-27B-TEE", "zai-org/GLM-5.3"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "去中心化推理，注册送免费额度；模型 ID 已从端点实读。",
+        "docs": "https://chutes.ai/app",
+    },
+    {
+        "id": "novita",
+        "name": "Novita AI（免费额度）",
+        "base_url": "https://api.novita.ai/v3/openai",
+        "api_key": "",
+        "models": ["deepseek/deepseek-v4.1-flash-1017", "zai-org/glm-5.3-flash",
+                   "moonshotai/kimi-k3.1-pro"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "注册送免费额度；模型 ID 已从端点实读。",
+        "docs": "https://novita.ai/settings/key-management",
+    },
+    {
+        "id": "deepinfra",
+        "name": "DeepInfra（免费额度）",
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "api_key": "",
+        "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen3.5-9B",
+                   "google/gemma-3-4b-it"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "注册送免费额度；模型 ID 已从端点实读。",
+        "docs": "https://deepinfra.com/dash/api_keys",
+    },
+    {
+        "id": "together",
+        "name": "Together AI（有免费模型）",
+        "base_url": "https://api.together.xyz/v1",
+        "api_key": "",
+        "models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+        "asr_models": [],
+        "vision": False,
+        "notes": "部分模型标价 0，可直接免费用；端点已实测存活。",
+        "docs": "https://api.together.ai/settings/api-keys",
+    },
 ]
 
 
@@ -214,6 +305,15 @@ CONCURRENCY = {
     "xfyun": 6,
     "deepseek": 16,
     "pollinations": 1,
+    "llm7": 2,
+    "cerebras": 4,
+    "mistral": 2,
+    "sambanova": 2,
+    "huggingface": 2,
+    "chutes": 2,
+    "novita": 2,
+    "deepinfra": 2,
+    "together": 2,
 }
 MODEL_CONCURRENCY = {
     "glm-4.7-flash": 6,
@@ -241,6 +341,17 @@ FREE_MODELS = {
              "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"},
     "pollinations": {"openai"},
     "llm7": {"codestral-latest"},
+    "cerebras": {"llama-3.3-70b", "llama-4-scout-17b-16e-instruct", "qwen-3-32b"},
+    "mistral": {"mistral-small-latest", "open-mistral-nemo"},
+    "sambanova": {"Meta-Llama-3.3-70B-Instruct", "gpt-oss-120b", "GLM-5.3"},
+    "huggingface": {"meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen3.8-27B",
+                    "deepseek-ai/DeepSeek-V4.1-Flash"},
+    "chutes": {"deepseek-ai/DeepSeek-V3.2-TEE", "Qwen/Qwen3.8-27B-TEE", "zai-org/GLM-5.3"},
+    "novita": {"deepseek/deepseek-v4.1-flash-1017", "zai-org/glm-5.3-flash",
+               "moonshotai/kimi-k3.1-pro"},
+    "deepinfra": {"meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen3.5-9B",
+                  "google/gemma-3-4b-it"},
+    "together": {"meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"},
     "openrouter": {
         "openrouter/free",
         "google/gemma-4-31b-it:free",
@@ -317,6 +428,103 @@ def _config_path() -> Path:
     return data_dir() / "config.json"
 
 
+def _keys_path() -> Path:
+    """API Key 单独存放，打包时可以不带这个文件。可用 YKZS_KEYS_FILE 覆盖路径。"""
+    env = os.environ.get("YKZS_KEYS_FILE")
+    return Path(env) if env else data_dir() / "keys.json"
+
+
+def _key_file_path() -> Path:
+    """主目录下的 key/key.txt：开发者直接改这里即可，代码里不出现任何 Key。"""
+    env = os.environ.get("YKZS_KEY_FILE")
+    if env:
+        return Path(env)
+    return app_root() / "key" / "key.txt"
+
+
+def _read_key_file() -> dict:
+    p = _key_file_path()
+    if not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for line in p.read_text("utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k:
+                out[k] = v
+    except Exception:
+        return {}
+    return out
+
+
+def _write_key_file(keys: dict) -> None:
+    p = _key_file_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# 云课助手 API Key 配置",
+        "# 格式：provider_id=key（等号两边可以有空格）",
+        "# 在这里改 Key 后重启应用即可；在软件设置里填写也会写回本文件。",
+        "# 本文件不要提交到代码仓库。",
+        "",
+    ]
+    for k in sorted(keys):
+        lines.append(f"{k}={keys.get(k, '')}")
+    p.write_text("\n".join(lines) + "\n", "utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+
+
+def _read_keys() -> dict:
+    p = _keys_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_keys(keys: dict) -> None:
+    _write_key_file(keys)
+
+
+def _migrate_keys(base: dict) -> None:
+    """首次升级：把 keys.json / config.json 里的 Key 汇总到 key/key.txt。"""
+    kp = _key_file_path()
+    if kp.exists():
+        return
+    keys: dict[str, str] = {}
+    for k, v in (_read_keys() or {}).items():
+        if (v or "").strip():
+            keys[k] = v.strip()
+    for prov in base.get("providers") or []:
+        k = (prov.get("api_key") or "").strip()
+        if k and k not in ("unused", "ollama"):
+            keys.setdefault(prov.get("id", ""), k)
+        prov["api_key"] = ""
+    if not keys:
+        keys = {p.get("id", ""): "" for p in base.get("providers") or []}
+    _write_key_file(keys)
+    # 旧文件清空，避免两处 Key 不一致
+    legacy = _keys_path()
+    if legacy.exists():
+        try:
+            legacy.write_text("{}\n", "utf-8")
+        except Exception:
+            pass
+    try:
+        _config_path().write_text(json.dumps(base, ensure_ascii=False, indent=2), "utf-8")
+    except Exception:
+        pass
+
+
 def load_settings(force: bool = False) -> dict:
     global _settings_cache
     with _lock:
@@ -336,6 +544,15 @@ def load_settings(force: bool = False) -> dict:
             if p["id"] not in have:
                 base.setdefault("providers", []).append(
                     json.loads(json.dumps(p, ensure_ascii=False)))
+        _migrate_keys(base)
+        keys = _read_key_file()
+        for k, v in (_read_keys() or {}).items():
+            if not keys.get(k) and (v or "").strip():
+                keys[k] = v.strip()
+        for prov in base.get("providers") or []:
+            k = keys.get(prov.get("id", ""))
+            if k:
+                prov["api_key"] = k
         _settings_cache = base
         return base
 
@@ -349,7 +566,23 @@ def save_settings(patch: dict) -> dict:
         chat = merged.get("chat")
         if isinstance(chat, dict):
             chat["system_prompt"] = str(chat.get("system_prompt") or "")[:4000]
-        _config_path().write_text(json.dumps(merged, ensure_ascii=False, indent=2), "utf-8")
+        # Key 写入独立文件，config.json 只保留非敏感配置，方便打包分发
+        keys = {
+            p.get("id", ""): p.get("api_key", "")
+            for p in merged.get("providers") or []
+            if p.get("api_key")
+        }
+        _write_keys(keys)
+        legacy = _keys_path()
+        if legacy.exists():
+            try:
+                legacy.write_text("{}\n", "utf-8")
+            except Exception:
+                pass
+        clean = json.loads(json.dumps(merged, ensure_ascii=False))
+        for prov in clean.get("providers") or []:
+            prov["api_key"] = ""
+        _config_path().write_text(json.dumps(clean, ensure_ascii=False, indent=2), "utf-8")
         _settings_cache = merged
         return merged
 
